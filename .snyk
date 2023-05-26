@@ -1,0 +1,24 @@
+# Snyk (https://snyk.io) policy file, patches or ignores known vulnerabilities.
+version: v1.25.1
+ignore: {}
+# patches apply the minimum changes required to fix a vulnerability
+patch:
+  SNYK-JS-LODASH-567746:
+    - aws-sdk > xml2js > xmlbuilder > lodash:
+        patched: '2023-05-26T09:06:00.069Z'
+    - babel-core > babel-generator > babel-types > lodash:
+        patched: '2023-05-26T09:06:00.069Z'
+    - babel-core > babel-helpers > babel-template > lodash:
+        patched: '2023-05-26T09:06:00.069Z'
+    - babel-core > babel-helpers > babel-template > babel-traverse > lodash:
+        patched: '2023-05-26T09:06:00.069Z'
+    - babel-jest > babel-plugin-istanbul > istanbul-lib-instrument > babel-generator > babel-types > lodash:
+        patched: '2023-05-26T09:06:00.069Z'
+    - babel-jest > babel-plugin-istanbul > istanbul-lib-instrument > babel-template > babel-traverse > lodash:
+        patched: '2023-05-26T09:06:00.069Z'
+    - jest > @jest/core > @jest/reporters > @jest/transform > @babel/core > @babel/helper-module-transforms > lodash:
+        patched: '2023-05-26T09:06:00.069Z'
+    - jest > @jest/core > @jest/reporters > @jest/transform > @babel/core > @babel/generator > @babel/types > lodash:
+        patched: '2023-05-26T09:06:00.069Z'
+    - jest > @jest/core > @jest/reporters > @jest/transform > @babel/core > @babel/helper-module-transforms > @babel/helper-replace-supers > @babel/traverse > lodash:
+        patched: '2023-05-26T09:06:00.069Z'
