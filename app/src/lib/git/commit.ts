@@ -10,11 +10,13 @@ import { stageManualConflictResolution } from './stage'
  * @param repository repository to execute merge in
  * @param message commit message
  * @param files files to commit
+ * @returns the commit SHA
  */
 export async function createCommit(
   repository: Repository,
   message: string,
-  files: ReadonlyArray<WorkingDirectoryFileChange>
+  files: ReadonlyArray<WorkingDirectoryFileChange>,
+  amend: boolean = false
 ): Promise<string> {
   // Clear the staging area, our diffs reflect the difference between the
   // working directory and the last commit (if any) so our commits should
@@ -23,8 +25,14 @@ export async function createCommit(
 
   await stageFiles(repository, files)
 
+  const args = ['-F', '-']
+
+  if (amend) {
+    args.push('--amend')
+  }
+
   const result = await git(
-    ['commit', '-F', '-'],
+    ['commit', ...args],
     repository.path,
     'createCommit',
     {

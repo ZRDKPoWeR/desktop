@@ -1,14 +1,12 @@
-import { git, gitNetworkArguments } from './core'
+import { git } from './core'
 import { Repository } from '../../models/repository'
 import { Branch } from '../../models/branch'
-import { IGitAccount } from '../../models/git-account'
 import { formatAsLocalRef } from './refs'
 import { deleteRef } from './update-ref'
 import { GitError as DugiteError } from 'dugite'
-import { getRemoteURL } from './remote'
-import { getFallbackUrlForProxyResolve } from './environment'
-import { withTrampolineEnvForRemoteOperation } from '../trampoline/trampoline-environment'
+import { envForRemoteOperation } from './environment'
 import { createForEachRefParser } from './git-delimiter-parser'
+import { IRemote } from '../../models/remote'
 
 /**
  * Create a new branch from the given start point.
@@ -70,43 +68,24 @@ export async function deleteLocalBranch(
  */
 export async function deleteRemoteBranch(
   repository: Repository,
-  account: IGitAccount | null,
-  remoteName: string,
+  remote: IRemote,
   remoteBranchName: string
 ): Promise<true> {
-  const networkArguments = await gitNetworkArguments(repository, account)
-  const remoteUrl =
-    (await getRemoteURL(repository, remoteName).catch(err => {
-      // If we can't get the URL then it's very unlikely Git will be able to
-      // either and the push will fail. The URL is only used to resolve the
-      // proxy though so it's not critical.
-      log.error(`Could not resolve remote url for remote ${remoteName}`, err)
-      return null
-    })) || getFallbackUrlForProxyResolve(account, repository)
-
-  const args = [...networkArguments, 'push', remoteName, `:${remoteBranchName}`]
+  const args = ['push', remote.name, `:${remoteBranchName}`]
 
   // If the user is not authenticated, the push is going to fail
   // Let this propagate and leave it to the caller to handle
-  const result = await withTrampolineEnvForRemoteOperation(
-    account,
-    remoteUrl,
-    env => {
-      return git(args, repository.path, 'deleteRemoteBranch', {
-        env,
-        expectedErrors: new Set<DugiteError>([
-          DugiteError.BranchDeletionFailed,
-        ]),
-      })
-    }
-  )
+  const result = await git(args, repository.path, 'deleteRemoteBranch', {
+    env: await envForRemoteOperation(remote.url),
+    expectedErrors: new Set<DugiteError>([DugiteError.BranchDeletionFailed]),
+  })
 
   // It's possible that the delete failed because the ref has already
   // been deleted on the remote. If we identify that specific
   // error we can safely remove our remote ref which is what would
   // happen if the push didn't fail.
   if (result.gitError === DugiteError.BranchDeletionFailed) {
-    const ref = `refs/remotes/${remoteName}/${remoteBranchName}`
+    const ref = `refs/remotes/${remote.name}/${remoteBranchName}`
     await deleteRef(repository, ref)
   }
 

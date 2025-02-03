@@ -29,6 +29,31 @@ export function getGlobalConfigValue(
 }
 
 /**
+ * Look up a config value by name.
+ *
+ * Treats the returned value as a boolean as per Git's
+ * own definition of a boolean configuration value (i.e.
+ * 0 -> false, "off" -> false, "yes" -> true etc)
+ */
+export async function getBooleanConfigValue(
+  repository: Repository,
+  name: string,
+  onlyLocal: boolean = false,
+  env?: {
+    HOME: string
+  }
+): Promise<boolean | null> {
+  const value = await getConfigValueInPath(
+    name,
+    repository.path,
+    onlyLocal,
+    'bool',
+    env
+  )
+  return value === null ? null : value !== 'false'
+}
+
+/**
  * Look up a global config value by name.
  *
  * Treats the returned value as a boolean as per Git's
@@ -97,34 +122,21 @@ async function getConfigValueInPath(
   return pieces[0]
 }
 
-/** Get the path to the global git config. */
-export async function getGlobalConfigPath(env?: {
-  HOME: string
-}): Promise<string | null> {
-  const options = env ? { env } : undefined
-  const result = await git(
-    ['config', '--global', '--list', '--show-origin', '--name-only', '-z'],
-    __dirname,
-    'getGlobalConfigPath',
-    options
-  )
-  const segments = result.stdout.split('\0')
-  if (segments.length < 1) {
-    return null
-  }
-
-  const pathSegment = segments[0]
-  if (!pathSegment.length) {
-    return null
-  }
-
-  const path = pathSegment.match(/file:(.+)/i)
-  if (!path || path.length < 2) {
-    return null
-  }
-
-  return normalize(path[1])
-}
+/**
+ * Get the path to the global git config
+ *
+ * Note: this uses git config --edit which will automatically create the global
+ * config file if it doesn't exist yet. The primary purpose behind this method
+ * is to support opening the global git config for editing.
+ */
+export const getGlobalConfigPath = (env?: { HOME: string }) =>
+  git(['config', '--edit', '--global'], __dirname, 'getGlobalConfigPath', {
+    // We're using printf instead of echo because echo could attempt to decode
+    // escape sequences like \n which would be bad in a case like
+    // c:\Users\niik\.gitconfig
+    //         ^^
+    env: { ...env, GIT_EDITOR: 'printf %s' },
+  }).then(x => normalize(x.stdout))
 
 /** Set the local config value by name. */
 export async function setConfigValue(
@@ -147,6 +159,50 @@ export async function setGlobalConfigValue(
   }
 ): Promise<void> {
   return setConfigValueInPath(name, value, null, env)
+}
+
+/** Set the global config value by name. */
+export async function addGlobalConfigValue(
+  name: string,
+  value: string
+): Promise<void> {
+  await git(
+    ['config', '--global', '--add', name, value],
+    __dirname,
+    'addGlobalConfigValue'
+  )
+}
+
+/**
+ * Adds a path to the `safe.directories` configuration variable if it's not
+ * already present. Adding a path to `safe.directory` will cause Git to ignore
+ * if the path is owner by a different user than the current.
+ */
+export async function addSafeDirectory(path: string) {
+  // UNC-paths on Windows need to be prefixed with `%(prefix)/`, see
+  // https://github.com/git-for-windows/git/commit/e394a16023cbb62784e380f70ad8a833fb960d68
+  if (__WIN32__ && path[0] === '/') {
+    path = `%(prefix)/${path}`
+  }
+
+  await addGlobalConfigValueIfMissing('safe.directory', path)
+}
+
+/** Set the global config value by name. */
+export async function addGlobalConfigValueIfMissing(
+  name: string,
+  value: string
+): Promise<void> {
+  const { stdout, exitCode } = await git(
+    ['config', '--global', '-z', '--get-all', name, value],
+    __dirname,
+    'addGlobalConfigValue',
+    { successExitCodes: new Set([0, 1]) }
+  )
+
+  if (exitCode === 1 || !stdout.split('\0').includes(value)) {
+    await addGlobalConfigValue(name, value)
+  }
 }
 
 /**

@@ -7,14 +7,14 @@ import { Changes, ChangesSidebar } from './changes'
 import { NoChanges } from './changes/no-changes'
 import { MultipleSelection } from './changes/multiple-selection'
 import { FilesChangedBadge } from './changes/files-changed-badge'
-import { SelectedCommit, CompareSidebar } from './history'
+import { SelectedCommits, CompareSidebar } from './history'
 import { Resizable } from './resizable'
 import { TabBar } from './tab-bar'
 import {
   IRepositoryState,
   RepositorySectionTab,
   ChangesSelectionKind,
-  FoldoutType,
+  IConstrainedValue,
 } from '../lib/app-state'
 import { Dispatcher } from './dispatcher'
 import { IssuesStore, GitHubUserStore } from '../lib/stores'
@@ -31,28 +31,33 @@ import { openFile } from './lib/open-file'
 import { AheadBehindStore } from '../lib/stores/ahead-behind-store'
 import { dragAndDropManager } from '../lib/drag-and-drop-manager'
 import { DragType } from '../models/drag-drop'
-
-/** The widest the sidebar can be with the minimum window size. */
-const MaxSidebarWidth = 495
+import { PullRequestSuggestedNextAction } from '../models/pull-request'
+import { clamp } from '../lib/clamp'
+import { Emoji } from '../lib/emoji'
 
 interface IRepositoryViewProps {
   readonly repository: Repository
   readonly state: IRepositoryState
   readonly dispatcher: Dispatcher
-  readonly emoji: Map<string, string>
-  readonly sidebarWidth: number
-  readonly commitSummaryWidth: number
-  readonly stashedFilesWidth: number
+  readonly emoji: Map<string, Emoji>
+  readonly sidebarWidth: IConstrainedValue
+  readonly commitSummaryWidth: IConstrainedValue
+  readonly stashedFilesWidth: IConstrainedValue
   readonly issuesStore: IssuesStore
   readonly gitHubUserStore: GitHubUserStore
-  readonly onViewCommitOnGitHub: (SHA: string) => void
+  readonly onViewCommitOnGitHub: (SHA: string, filePath?: string) => void
   readonly imageDiffType: ImageDiffType
   readonly hideWhitespaceInChangesDiff: boolean
   readonly hideWhitespaceInHistoryDiff: boolean
   readonly showSideBySideDiff: boolean
+  readonly showDiffCheckMarks: boolean
   readonly askForConfirmationOnDiscardChanges: boolean
+  readonly askForConfirmationOnCommitFilteredChanges: boolean
+  readonly askForConfirmationOnDiscardStash: boolean
+  readonly askForConfirmationOnCheckoutCommit: boolean
   readonly focusCommitMessage: boolean
   readonly commitSpellcheckEnabled: boolean
+  readonly showCommitLengthWarning: boolean
   readonly accounts: ReadonlyArray<Account>
 
   /**
@@ -66,6 +71,14 @@ interface IRepositoryViewProps {
    * a foldout dialog such as the file menu, or the branches dropdown
    */
   readonly isShowingFoldout: boolean
+
+  /**
+   * Whether or not the user has a configured (explicitly,
+   * or automatically) external editor. Used to
+   * determine whether or not to render the action for
+   * opening the repository in an external editor.
+   */
+  readonly isExternalEditorAvailable: boolean
 
   /** The name of the currently selected external editor */
   readonly externalEditorLabel?: string
@@ -93,8 +106,11 @@ interface IRepositoryViewProps {
     repository: Repository,
     commits: ReadonlyArray<CommitOneLine>
   ) => void
-  /* Whether or not the user has been introduced to cherry picking feature */
-  readonly hasShownCherryPickIntro: boolean
+
+  /** The user's preference of pull request suggested next action to use **/
+  readonly pullRequestSuggestedNextAction?: PullRequestSuggestedNextAction
+
+  readonly canFilterChanges: boolean
 }
 
 interface IRepositoryViewState {
@@ -111,8 +127,18 @@ export class RepositoryView extends React.Component<
   IRepositoryViewProps,
   IRepositoryViewState
 > {
-  private previousSection: RepositorySectionTab = this.props.state
-    .selectedSection
+  private previousSection: RepositorySectionTab =
+    this.props.state.selectedSection
+
+  // Flag to force the app to use the scroll position in the state the next time
+  // the Compare list is rendered.
+  private forceCompareListScrollTop: boolean = false
+
+  private readonly changesSidebarRef = React.createRef<ChangesSidebar>()
+  private readonly compareSidebarRef = React.createRef<CompareSidebar>()
+
+  private focusHistoryNeeded: boolean = false
+  private focusChangesNeeded: boolean = false
 
   public constructor(props: IRepositoryViewProps) {
     super(props)
@@ -121,6 +147,22 @@ export class RepositoryView extends React.Component<
       changesListScrollTop: 0,
       compareListScrollTop: 0,
     }
+  }
+
+  public setFocusHistoryNeeded(): void {
+    this.focusHistoryNeeded = true
+  }
+
+  public setFocusChangesNeeded(): void {
+    this.focusChangesNeeded = true
+  }
+
+  public scrollCompareListToTop(): void {
+    this.forceCompareListScrollTop = true
+
+    this.setState({
+      compareListScrollTop: 0,
+    })
   }
 
   private onChangesListScrolled = (scrollTop: number) => {
@@ -132,8 +174,8 @@ export class RepositoryView extends React.Component<
   }
 
   private renderChangesBadge(): JSX.Element | null {
-    const filesChangedCount = this.props.state.changesState.workingDirectory
-      .files.length
+    const filesChangedCount =
+      this.props.state.changesState.workingDirectory.files.length
 
     if (filesChangedCount <= 0) {
       return null
@@ -150,25 +192,16 @@ export class RepositoryView extends React.Component<
 
     return (
       <TabBar selectedIndex={selectedTab} onTabClicked={this.onTabClicked}>
-        <span className="with-indicator">
+        <span className="with-indicator" id="changes-tab">
           <span>Changes</span>
           {this.renderChangesBadge()}
         </span>
 
-        <div className="with-indicator">
-          <span>History {this.renderNewCallToActionBubble()}</span>
+        <div className="with-indicator" id="history-tab">
+          <span>History</span>
         </div>
       </TabBar>
     )
-  }
-
-  private renderNewCallToActionBubble(): JSX.Element | null {
-    const { hasShownCherryPickIntro, state } = this.props
-    const { compareState } = state
-    if (hasShownCherryPickIntro || compareState.commitSHAs.length === 0) {
-      return null
-    }
-    return <span className="call-to-action-bubble">New</span>
   }
 
   private renderChangesSidebar(): JSX.Element {
@@ -191,7 +224,7 @@ export class RepositoryView extends React.Component<
         : null) || null
 
     // -1 Because of right hand side border
-    const availableWidth = this.props.sidebarWidth - 1
+    const availableWidth = clamp(this.props.sidebarWidth) - 1
 
     const scrollTop =
       this.previousSection === RepositorySectionTab.History
@@ -201,9 +234,11 @@ export class RepositoryView extends React.Component<
 
     return (
       <ChangesSidebar
+        ref={this.changesSidebarRef}
         repository={this.props.repository}
         dispatcher={this.props.dispatcher}
         changes={this.props.state.changesState}
+        aheadBehind={this.props.state.aheadBehind}
         branch={branchName}
         commitAuthor={this.props.state.commitAuthor}
         emoji={this.props.emoji}
@@ -212,12 +247,18 @@ export class RepositoryView extends React.Component<
         availableWidth={availableWidth}
         gitHubUserStore={this.props.gitHubUserStore}
         isCommitting={this.props.state.isCommitting}
+        commitToAmend={this.props.state.commitToAmend}
         isPushPullFetchInProgress={this.props.state.isPushPullFetchInProgress}
         focusCommitMessage={this.props.focusCommitMessage}
         askForConfirmationOnDiscardChanges={
           this.props.askForConfirmationOnDiscardChanges
         }
+        askForConfirmationOnCommitFilteredChanges={
+          this.props.askForConfirmationOnCommitFilteredChanges
+        }
         accounts={this.props.accounts}
+        isShowingModal={this.props.isShowingModal}
+        isShowingFoldout={this.props.isShowingFoldout}
         externalEditorLabel={this.props.externalEditorLabel}
         onOpenInExternalEditor={this.props.onOpenInExternalEditor}
         onChangesListScrolled={this.onChangesListScrolled}
@@ -226,42 +267,63 @@ export class RepositoryView extends React.Component<
           this.props.currentTutorialStep === TutorialStep.MakeCommit
         }
         commitSpellcheckEnabled={this.props.commitSpellcheckEnabled}
+        showCommitLengthWarning={this.props.showCommitLengthWarning}
+        canFilterChanges={this.props.canFilterChanges}
       />
     )
   }
 
   private renderCompareSidebar(): JSX.Element {
-    const tip = this.props.state.branchesState.tip
+    const { repository, dispatcher, state, aheadBehindStore, emoji } =
+      this.props
+    const {
+      remote,
+      compareState,
+      branchesState,
+      commitSelection: { shas },
+      commitLookup,
+      localCommitSHAs,
+      localTags,
+      tagsToPush,
+      multiCommitOperationState: mcos,
+    } = state
+    const { tip } = branchesState
     const currentBranch = tip.kind === TipState.Valid ? tip.branch : null
-
     const scrollTop =
+      this.forceCompareListScrollTop ||
       this.previousSection === RepositorySectionTab.Changes
         ? this.state.compareListScrollTop
         : undefined
     this.previousSection = RepositorySectionTab.History
+    this.forceCompareListScrollTop = false
 
     return (
       <CompareSidebar
-        repository={this.props.repository}
-        isLocalRepository={this.props.state.remote === null}
-        compareState={this.props.state.compareState}
-        selectedCommitShas={this.props.state.commitSelection.shas}
+        ref={this.compareSidebarRef}
+        repository={repository}
+        isLocalRepository={remote === null}
+        compareState={compareState}
+        selectedCommitShas={shas}
+        shasToHighlight={compareState.shasToHighlight}
         currentBranch={currentBranch}
-        emoji={this.props.emoji}
-        commitLookup={this.props.state.commitLookup}
-        localCommitSHAs={this.props.state.localCommitSHAs}
-        localTags={this.props.state.localTags}
-        dispatcher={this.props.dispatcher}
+        emoji={emoji}
+        commitLookup={commitLookup}
+        localCommitSHAs={localCommitSHAs}
+        localTags={localTags}
+        dispatcher={dispatcher}
         onRevertCommit={this.onRevertCommit}
+        onAmendCommit={this.onAmendCommit}
         onViewCommitOnGitHub={this.props.onViewCommitOnGitHub}
         onCompareListScrolled={this.onCompareListScrolled}
         onCherryPick={this.props.onCherryPick}
         compareListScrollTop={scrollTop}
-        tagsToPush={this.props.state.tagsToPush}
-        aheadBehindStore={this.props.aheadBehindStore}
-        hasShownCherryPickIntro={this.props.hasShownCherryPickIntro}
-        onDragCommitEnd={this.onDragCommitEnd}
-        isCherryPickInProgress={this.props.state.cherryPickState.step !== null}
+        tagsToPush={tagsToPush}
+        aheadBehindStore={aheadBehindStore}
+        isMultiCommitOperationInProgress={mcos !== null}
+        askForConfirmationOnCheckoutCommit={
+          this.props.askForConfirmationOnCheckoutCommit
+        }
+        accounts={this.props.accounts}
       />
     )
   }
@@ -291,10 +353,12 @@ export class RepositoryView extends React.Component<
       <FocusContainer onFocusWithinChanged={this.onSidebarFocusWithinChanged}>
         <Resizable
           id="repository-sidebar"
-          width={this.props.sidebarWidth}
+          width={this.props.sidebarWidth.value}
+          maximumWidth={this.props.sidebarWidth.max}
+          minimumWidth={this.props.sidebarWidth.min}
           onReset={this.handleSidebarWidthReset}
           onResize={this.handleSidebarResize}
-          maximumWidth={MaxSidebarWidth}
+          description="Repository sidebar"
         >
           {this.renderTabs()}
           {this.renderSidebarContents()}
@@ -316,8 +380,7 @@ export class RepositoryView extends React.Component<
 
   private renderStashedChangesContent(): JSX.Element | null {
     const { changesState } = this.props.state
-    const { selection, stashEntry, workingDirectory } = changesState
-    const isWorkingTreeClean = workingDirectory.files.length === 0
+    const { selection, stashEntry } = changesState
 
     if (selection.kind !== ChangesSelectionKind.Stash || stashEntry === null) {
       return null
@@ -333,10 +396,15 @@ export class RepositoryView extends React.Component<
           fileListWidth={this.props.stashedFilesWidth}
           repository={this.props.repository}
           dispatcher={this.props.dispatcher}
-          isWorkingTreeClean={isWorkingTreeClean}
+          askForConfirmationOnDiscardStash={
+            this.props.askForConfirmationOnDiscardStash
+          }
           showSideBySideDiff={this.props.showSideBySideDiff}
           onOpenBinaryFile={this.onOpenBinaryFile}
+          onOpenSubmodule={this.onOpenSubmodule}
           onChangeImageDiffType={this.onChangeImageDiffType}
+          onHideWhitespaceInDiffChanged={this.onHideWhitespaceInDiffChanged}
+          onOpenInExternalEditor={this.props.onOpenInExternalEditor}
         />
       )
     }
@@ -344,27 +412,39 @@ export class RepositoryView extends React.Component<
     return null
   }
 
+  private onHideWhitespaceInDiffChanged = (hideWhitespaceInDiff: boolean) => {
+    return this.props.dispatcher.onHideWhitespaceInChangesDiffChanged(
+      hideWhitespaceInDiff,
+      this.props.repository
+    )
+  }
+
   private renderContentForHistory(): JSX.Element {
-    const { commitSelection } = this.props.state
+    const { commitSelection, commitLookup, localCommitSHAs } = this.props.state
+    const { changesetData, file, diff, shas, shasInDiff, isContiguous } =
+      commitSelection
 
-    const sha =
-      commitSelection.shas.length === 1 ? commitSelection.shas[0] : null
-
-    const selectedCommit =
-      sha != null ? this.props.state.commitLookup.get(sha) || null : null
-
-    const { changedFiles, file, diff } = commitSelection
+    const selectedCommits = []
+    for (const sha of shas) {
+      const commit = commitLookup.get(sha)
+      if (commit !== undefined) {
+        selectedCommits.push(commit)
+      }
+    }
 
     const showDragOverlay = dragAndDropManager.isDragOfTypeInProgress(
       DragType.Commit
     )
 
     return (
-      <SelectedCommit
+      <SelectedCommits
         repository={this.props.repository}
         dispatcher={this.props.dispatcher}
-        selectedCommit={selectedCommit}
-        changedFiles={changedFiles}
+        selectedCommits={selectedCommits}
+        shasInDiff={shasInDiff}
+        isContiguous={isContiguous}
+        localCommitSHAs={localCommitSHAs}
+        changesetData={changesetData}
         selectedFile={file}
         currentDiff={diff}
         emoji={this.props.emoji}
@@ -372,27 +452,43 @@ export class RepositoryView extends React.Component<
         selectedDiffType={this.props.imageDiffType}
         externalEditorLabel={this.props.externalEditorLabel}
         onOpenInExternalEditor={this.props.onOpenInExternalEditor}
+        onViewCommitOnGitHub={this.props.onViewCommitOnGitHub}
         hideWhitespaceInDiff={this.props.hideWhitespaceInHistoryDiff}
         showSideBySideDiff={this.props.showSideBySideDiff}
         onOpenBinaryFile={this.onOpenBinaryFile}
+        onOpenSubmodule={this.onOpenSubmodule}
         onChangeImageDiffType={this.onChangeImageDiffType}
         onDiffOptionsOpened={this.onDiffOptionsOpened}
-        areMultipleCommitsSelected={commitSelection.shas.length > 1}
         showDragOverlay={showDragOverlay}
+        accounts={this.props.accounts}
       />
     )
   }
 
   private onDiffOptionsOpened = () => {
-    this.props.dispatcher.recordDiffOptionsViewed()
+    this.props.dispatcher.incrementMetric('diffOptionsViewedCount')
+  }
+
+  private onTutorialCompletionAnnounced = () => {
+    this.props.dispatcher.markTutorialCompletionAsAnnounced(
+      this.props.repository
+    )
   }
 
   private renderTutorialPane(): JSX.Element {
-    if (this.props.currentTutorialStep === TutorialStep.AllDone) {
+    if (
+      [TutorialStep.AllDone, TutorialStep.Announced].includes(
+        this.props.currentTutorialStep
+      )
+    ) {
       return (
         <TutorialDone
           dispatcher={this.props.dispatcher}
           repository={this.props.repository}
+          tutorialCompletionAnnounced={
+            this.props.currentTutorialStep === TutorialStep.Announced
+          }
+          onTutorialCompletionAnnounced={this.onTutorialCompletionAnnounced}
         />
       )
     } else {
@@ -424,10 +520,11 @@ export class RepositoryView extends React.Component<
             appMenu={this.props.appMenu}
             repository={this.props.repository}
             repositoryState={this.props.state}
-            isExternalEditorAvailable={
-              this.props.externalEditorLabel !== undefined
-            }
+            isExternalEditorAvailable={this.props.isExternalEditorAvailable}
             dispatcher={this.props.dispatcher}
+            pullRequestSuggestedNextAction={
+              this.props.pullRequestSuggestedNextAction
+            }
           />
         )
       }
@@ -452,7 +549,9 @@ export class RepositoryView extends React.Component<
           imageDiffType={this.props.imageDiffType}
           hideWhitespaceInDiff={this.props.hideWhitespaceInChangesDiff}
           showSideBySideDiff={this.props.showSideBySideDiff}
+          showDiffCheckMarks={this.props.showDiffCheckMarks}
           onOpenBinaryFile={this.onOpenBinaryFile}
+          onOpenSubmodule={this.onOpenSubmodule}
           onChangeImageDiffType={this.onChangeImageDiffType}
           askForConfirmationOnDiscardChanges={
             this.props.askForConfirmationOnDiscardChanges
@@ -465,6 +564,11 @@ export class RepositoryView extends React.Component<
 
   private onOpenBinaryFile = (fullPath: string) => {
     openFile(fullPath, this.props.dispatcher)
+  }
+
+  private onOpenSubmodule = (fullPath: string) => {
+    this.props.dispatcher.incrementMetric('openSubmoduleFromDiffCount')
+    this.props.dispatcher.openOrAddRepository(fullPath)
   }
 
   private onChangeImageDiffType = (imageDiffType: ImageDiffType) => {
@@ -496,12 +600,32 @@ export class RepositoryView extends React.Component<
     this.props.dispatcher.revertCommit(this.props.repository, commit)
   }
 
+  private onAmendCommit = (commit: Commit, isLocalCommit: boolean) => {
+    this.props.dispatcher.startAmendingRepository(
+      this.props.repository,
+      commit,
+      isLocalCommit
+    )
+  }
+
   public componentDidMount() {
     window.addEventListener('keydown', this.onGlobalKeyDown)
   }
 
   public componentWillUnmount() {
     window.removeEventListener('keydown', this.onGlobalKeyDown)
+  }
+
+  public componentDidUpdate(): void {
+    if (this.focusChangesNeeded) {
+      this.focusChangesNeeded = false
+      this.changesSidebarRef.current?.focus()
+    }
+
+    if (this.focusHistoryNeeded) {
+      this.focusHistoryNeeded = false
+      this.compareSidebarRef.current?.focusHistory()
+    }
   }
 
   private onGlobalKeyDown = (event: KeyboardEvent) => {
@@ -564,26 +688,5 @@ export class RepositoryView extends React.Component<
       )
     }
     return null
-  }
-
-  /**
-   * This method is a generic event handler for when a commit has ended being
-   * dragged.
-   *
-   * Currently only used for cherry picking, but this could be more generic.
-   */
-  private onDragCommitEnd = async (clearCherryPickingState: boolean) => {
-    this.props.dispatcher.closeFoldout(FoldoutType.Branch)
-
-    if (!clearCherryPickingState) {
-      return
-    }
-
-    const { state, repository } = this.props
-    const { cherryPickState } = state
-    if (cherryPickState !== null && cherryPickState.step !== null) {
-      this.props.dispatcher.endCherryPickFlow(repository)
-      this.props.dispatcher.recordCherryPickDragStartedAndCanceled()
-    }
   }
 }

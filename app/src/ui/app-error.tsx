@@ -7,25 +7,22 @@ import {
   DefaultDialogFooter,
 } from './dialog'
 import { dialogTransitionTimeout } from './app'
-import { GitError, isAuthFailureError } from '../lib/git/core'
+import { coerceToString, GitError, isAuthFailureError } from '../lib/git/core'
 import { Popup, PopupType } from '../models/popup'
-import { TransitionGroup, CSSTransition } from 'react-transition-group'
 import { OkCancelButtonGroup } from './dialog/ok-cancel-button-group'
 import { ErrorWithMetadata } from '../lib/error-with-metadata'
 import { RetryActionType, RetryAction } from '../models/retry-actions'
 import { Ref } from './lib/ref'
-import memoizeOne from 'memoize-one'
-import { parseCarriageReturn } from '../lib/parse-carriage-return'
+import { GitError as DugiteError } from 'dugite'
+import { LinkButton } from './lib/link-button'
+import { getFileFromExceedsError } from '../lib/helpers/regex'
 
 interface IAppErrorProps {
-  /** The list of queued, app-wide, errors  */
-  readonly errors: ReadonlyArray<Error>
+  /** The error to be displayed  */
+  readonly error: Error
 
-  /**
-   * A callback which is used whenever a particular error
-   * has been shown to, and been dismissed by, the user.
-   */
-  readonly onClearError: (error: Error) => void
+  /** Called to dismiss the dialog */
+  readonly onDismissed: () => void
   readonly onShowPopup: (popupType: Popup) => void | undefined
   readonly onRetryAction: (retryAction: RetryAction) => void
 }
@@ -48,18 +45,17 @@ interface IAppErrorState {
  */
 export class AppError extends React.Component<IAppErrorProps, IAppErrorState> {
   private dialogContent: HTMLDivElement | null = null
-  private formatGitErrorMessage = memoizeOne(parseCarriageReturn)
 
   public constructor(props: IAppErrorProps) {
     super(props)
     this.state = {
-      error: props.errors[0] || null,
+      error: props.error,
       disabled: false,
     }
   }
 
   public componentWillReceiveProps(nextProps: IAppErrorProps) {
-    const error = nextProps.errors[0] || null
+    const error = nextProps.error
 
     // We keep the currently shown error until it has disappeared
     // from the first spot in the application error queue.
@@ -68,23 +64,8 @@ export class AppError extends React.Component<IAppErrorProps, IAppErrorState> {
     }
   }
 
-  private onDismissed = () => {
-    const currentError = this.state.error
-
-    if (currentError !== null) {
-      this.setState({ error: null, disabled: true })
-
-      // Give some time for the dialog to nicely transition
-      // out before we clear the error and, potentially, deal
-      // with the next error in the queue.
-      window.setTimeout(() => {
-        this.props.onClearError(currentError)
-      }, dialogTransitionTimeout.exit)
-    }
-  }
-
   private showPreferencesDialog = () => {
-    this.onDismissed()
+    this.props.onDismissed()
 
     //This is a hacky solution to resolve multiple dialog windows
     //being open at the same time.
@@ -95,7 +76,7 @@ export class AppError extends React.Component<IAppErrorProps, IAppErrorState> {
 
   private onRetryAction = (event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault()
-    this.onDismissed()
+    this.props.onDismissed()
 
     const { error } = this.state
 
@@ -113,49 +94,53 @@ export class AppError extends React.Component<IAppErrorProps, IAppErrorState> {
     // If the error message is just the raw git output, display it in
     // fixed-width font
     if (isRawGitError(e)) {
-      const formattedMessage = this.formatGitErrorMessage(e.message)
-      return <p className="monospace">{formattedMessage}</p>
+      return <p className="monospace">{e.message}</p>
+    }
+
+    if (
+      isGitError(e) &&
+      e.result.gitError === DugiteError.PushWithFileSizeExceedingLimit
+    ) {
+      const files = getFileFromExceedsError(coerceToString(e.result.stderr))
+      return (
+        <>
+          <p>{error.message}</p>
+          {files.length > 0 && (
+            <>
+              <p>Files that exceed the limit</p>
+              <ul>
+                {files.map(file => (
+                  <li key={file}>{file}</li>
+                ))}
+              </ul>
+            </>
+          )}
+          <p>
+            See{' '}
+            <LinkButton uri="https://gh.io/lfs">https://gh.io/lfs</LinkButton>{' '}
+            for more information on managing large files on GitHub
+          </p>
+        </>
+      )
     }
 
     return <p>{e.message}</p>
   }
 
   private getTitle(error: Error) {
-    if (isCloneError(error)) {
-      return 'Clone failed'
+    switch (getDugiteError(error)) {
+      case DugiteError.PushWithFileSizeExceedingLimit:
+        return 'File size limit exceeded'
+    }
+
+    switch (getRetryActionType(error)) {
+      case RetryActionType.Clone:
+        return 'Clone failed'
+      case RetryActionType.Push:
+        return 'Failed to push'
     }
 
     return 'Error'
-  }
-
-  private renderDialog() {
-    const error = this.state.error
-
-    if (!error) {
-      return null
-    }
-
-    return (
-      <Dialog
-        id="app-error"
-        type="error"
-        key="error"
-        title={this.getTitle(error)}
-        dismissable={false}
-        onSubmit={this.onDismissed}
-        onDismissed={this.onDismissed}
-        disabled={this.state.disabled}
-        className={
-          isRawGitError(this.state.error) ? 'raw-git-error' : undefined
-        }
-      >
-        <DialogContent onRef={this.onDialogContentRef}>
-          {this.renderErrorMessage(error)}
-          {this.renderContentAfterErrorMessage(error)}
-        </DialogContent>
-        {this.renderFooter(error)}
-      </Dialog>
-    )
   }
 
   private renderContentAfterErrorMessage(error: Error) {
@@ -207,7 +192,7 @@ export class AppError extends React.Component<IAppErrorProps, IAppErrorState> {
 
   private onCloseButtonClick = (e: React.MouseEvent<HTMLButtonElement>) => {
     e.preventDefault()
-    this.onDismissed()
+    this.props.onDismissed()
   }
 
   private renderFooter(error: Error) {
@@ -257,16 +242,36 @@ export class AppError extends React.Component<IAppErrorProps, IAppErrorState> {
   }
 
   public render() {
-    const dialogContent = this.renderDialog()
+    const error = this.state.error
+
+    if (!error) {
+      return null
+    }
 
     return (
-      <TransitionGroup>
-        {dialogContent && (
-          <CSSTransition classNames="modal" timeout={dialogTransitionTimeout}>
-            {dialogContent}
-          </CSSTransition>
-        )}
-      </TransitionGroup>
+      <Dialog
+        id="app-error"
+        type="error"
+        key="error"
+        title={this.getTitle(error)}
+        backdropDismissable={false}
+        onSubmit={this.props.onDismissed}
+        onDismissed={this.props.onDismissed}
+        disabled={this.state.disabled}
+        className={
+          isRawGitError(this.state.error) ? 'raw-git-error' : undefined
+        }
+        role="alertdialog"
+        ariaDescribedBy="app-error-description"
+      >
+        <DialogContent onRef={this.onDialogContentRef}>
+          <div id="app-error-description">
+            {this.renderErrorMessage(error)}
+            {this.renderContentAfterErrorMessage(error)}
+          </div>
+        </DialogContent>
+        {this.renderFooter(error)}
+      </Dialog>
     )
   }
 }
@@ -297,4 +302,17 @@ function isCloneError(error: Error) {
   }
   const { retryAction } = error.metadata
   return retryAction !== undefined && retryAction.type === RetryActionType.Clone
+}
+
+function getRetryActionType(error: Error) {
+  if (!isErrorWithMetaData(error)) {
+    return undefined
+  }
+
+  return error.metadata.retryAction?.type
+}
+
+function getDugiteError(error: Error) {
+  const e = getUnderlyingError(error)
+  return isGitError(e) ? e.result.gitError : undefined
 }

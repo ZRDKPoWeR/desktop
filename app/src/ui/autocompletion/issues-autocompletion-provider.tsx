@@ -10,7 +10,8 @@ const UpdateIssuesThrottleInterval = 1000 * 60
 
 /** The autocompletion provider for issues in a GitHub repository. */
 export class IssuesAutocompletionProvider
-  implements IAutocompletionProvider<IIssueHit> {
+  implements IAutocompletionProvider<IIssueHit>
+{
   public readonly kind = 'issue'
 
   private readonly issuesStore: IssuesStore
@@ -52,7 +53,7 @@ export class IssuesAutocompletionProvider
   public renderItem(item: IIssueHit): JSX.Element {
     return (
       <div className="issue" key={item.number}>
-        <span className="number">#{item.number}</span>
+        <span className="number">#{item.number}</span>&nbsp;
         <span className="title">{item.title}</span>
       </div>
     )

@@ -29,6 +29,10 @@ import { filesNotTrackedByLFS } from '../../lib/git/lfs'
 import { getLargeFilePaths } from '../../lib/large-files'
 import { isConflictedFile, hasUnresolvedConflicts } from '../../lib/status'
 import { getAccountForRepository } from '../../lib/get-account-for-repository'
+import { IAheadBehind } from '../../models/branch'
+import { Emoji } from '../../lib/emoji'
+import { enableFilteredChangesList } from '../../lib/feature-flag'
+import { FilterChangesList } from './filter-changes-list'
 
 /**
  * The timeout for the animation of the enter/leave animation for Undo.
@@ -41,19 +45,28 @@ const UndoCommitAnimationTimeout = 500
 interface IChangesSidebarProps {
   readonly repository: Repository
   readonly changes: IChangesState
+  readonly aheadBehind: IAheadBehind | null
   readonly dispatcher: Dispatcher
   readonly commitAuthor: CommitIdentity | null
   readonly branch: string | null
-  readonly emoji: Map<string, string>
+  readonly emoji: Map<string, Emoji>
   readonly mostRecentLocalCommit: Commit | null
+  // Used in receiveProps, no-unused-prop-types doesn't know that
+  // eslint-disable-next-line react/no-unused-prop-types
   readonly issuesStore: IssuesStore
   readonly availableWidth: number
   readonly isCommitting: boolean
+  readonly commitToAmend: Commit | null
   readonly isPushPullFetchInProgress: boolean
+  // Used in receiveProps, no-unused-prop-types doesn't know that
+  // eslint-disable-next-line react/no-unused-prop-types
   readonly gitHubUserStore: GitHubUserStore
   readonly focusCommitMessage: boolean
   readonly askForConfirmationOnDiscardChanges: boolean
+  readonly askForConfirmationOnCommitFilteredChanges: boolean
   readonly accounts: ReadonlyArray<Account>
+  readonly isShowingModal: boolean
+  readonly isShowingFoldout: boolean
   /** The name of the currently selected external editor */
   readonly externalEditorLabel?: string
 
@@ -73,12 +86,17 @@ interface IChangesSidebarProps {
   readonly shouldNudgeToCommit: boolean
 
   readonly commitSpellcheckEnabled: boolean
+
+  readonly showCommitLengthWarning: boolean
+
+  readonly canFilterChanges: boolean
 }
 
 export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
   private autocompletionProviders: ReadonlyArray<
     IAutocompletionProvider<any>
   > | null = null
+  private changesListRef = React.createRef<ChangesList>()
 
   public constructor(props: IChangesSidebarProps) {
     super(props)
@@ -115,9 +133,9 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
 
     const overSizedFiles = await getLargeFilePaths(
       this.props.repository,
-      workingDirectory,
-      100
+      workingDirectory
     )
+
     const filesIgnoredByLFS = await filesNotTrackedByLFS(
       this.props.repository,
       overSizedFiles
@@ -143,7 +161,9 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
 
     if (conflictedFilesLeft.length === 0) {
       this.props.dispatcher.clearBanner()
-      this.props.dispatcher.recordUnguidedConflictedMergeCompletion()
+      this.props.dispatcher.incrementMetric(
+        'unguidedConflictedMergeCompletionCount'
+      )
     }
 
     // which of the files selected for committing are conflicted (with markers)?
@@ -228,7 +248,11 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
     })
   }
 
-  private onIgnore = (pattern: string | string[]) => {
+  private onIgnoreFile = (file: string | string[]) => {
+    this.props.dispatcher.appendIgnoreFile(this.props.repository, file)
+  }
+
+  private onIgnorePattern = (pattern: string | string[]) => {
     this.props.dispatcher.appendIgnoreRule(this.props.repository, pattern)
   }
 
@@ -240,6 +264,14 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
   private onOpenItem = (path: string) => {
     const fullPath = Path.join(this.props.repository.path, path)
     openFile(fullPath, this.props.dispatcher)
+  }
+  /**
+   * Called to open a file in the default external editor
+   *
+   * @param path The path of the file relative to the root of the repository
+   */
+  private onOpenItemInExternalEditor = (path: string) => {
+    this.props.onOpenInExternalEditor(path)
   }
 
   /**
@@ -299,7 +331,12 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
 
     // We don't allow undoing commits that have tags associated to them, since then
     // the commit won't be completely deleted because the tag will still point to it.
-    if (commit && commit.tags.length === 0) {
+    // Also, don't allow undoing commits while the user is amending the last one.
+    if (
+      commit &&
+      commit.tags.length === 0 &&
+      this.props.commitToAmend === null
+    ) {
       child = (
         <CSSTransition
           classNames="undo"
@@ -330,6 +367,10 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
     return this.renderMostRecentLocalCommit()
   }
 
+  public focus() {
+    this.changesListRef.current?.focus()
+  }
+
   public render() {
     const {
       workingDirectory,
@@ -339,6 +380,7 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
       conflictState,
       selection,
       currentBranchProtected,
+      currentRepoRulesInfo,
     } = this.props.changes
     let rebaseConflictState: RebaseConflictState | null = null
     if (conflictState !== null) {
@@ -358,14 +400,21 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
       this.props.repository
     )
 
+    const ChangesListComponent =
+      enableFilteredChangesList() && this.props.canFilterChanges
+        ? FilterChangesList
+        : ChangesList
+
     return (
-      <div className="panel">
-        <ChangesList
+      <div className="panel" role="tabpanel" aria-labelledby="changes-tab">
+        <ChangesListComponent
+          ref={this.changesListRef}
           dispatcher={this.props.dispatcher}
           repository={this.props.repository}
           repositoryAccount={repositoryAccount}
           workingDirectory={workingDirectory}
           conflictState={conflictState}
+          mostRecentLocalCommit={this.props.mostRecentLocalCommit}
           rebaseConflictState={rebaseConflictState}
           selectedFileIDs={selectedFileIDs}
           onFileSelectionChanged={this.onFileSelectionChanged}
@@ -376,6 +425,9 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
           askForConfirmationOnDiscardChanges={
             this.props.askForConfirmationOnDiscardChanges
           }
+          askForConfirmationOnCommitFilteredChanges={
+            this.props.askForConfirmationOnCommitFilteredChanges
+          }
           onDiscardChangesFromFiles={this.onDiscardChangesFromFiles}
           onOpenItem={this.onOpenItem}
           onRowClick={this.onChangedItemClick}
@@ -383,14 +435,18 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
           branch={this.props.branch}
           commitMessage={commitMessage}
           focusCommitMessage={this.props.focusCommitMessage}
+          isShowingModal={this.props.isShowingModal}
+          isShowingFoldout={this.props.isShowingFoldout}
           autocompletionProviders={this.autocompletionProviders!}
           availableWidth={this.props.availableWidth}
-          onIgnore={this.onIgnore}
+          onIgnoreFile={this.onIgnoreFile}
+          onIgnorePattern={this.onIgnorePattern}
           isCommitting={this.props.isCommitting}
+          commitToAmend={this.props.commitToAmend}
           showCoAuthoredBy={showCoAuthoredBy}
           coAuthors={coAuthors}
           externalEditorLabel={this.props.externalEditorLabel}
-          onOpenInExternalEditor={this.props.onOpenInExternalEditor}
+          onOpenItemInExternalEditor={this.onOpenItemInExternalEditor}
           onChangesListScrolled={this.props.onChangesListScrolled}
           changesListScrollTop={this.props.changesListScrollTop}
           stashEntry={this.props.changes.stashEntry}
@@ -398,6 +454,10 @@ export class ChangesSidebar extends React.Component<IChangesSidebarProps, {}> {
           currentBranchProtected={currentBranchProtected}
           shouldNudgeToCommit={this.props.shouldNudgeToCommit}
           commitSpellcheckEnabled={this.props.commitSpellcheckEnabled}
+          showCommitLengthWarning={this.props.showCommitLengthWarning}
+          currentRepoRulesInfo={currentRepoRulesInfo}
+          aheadBehind={this.props.aheadBehind}
+          accounts={this.props.accounts}
         />
         {this.renderUndoCommit(rebaseConflictState)}
       </div>

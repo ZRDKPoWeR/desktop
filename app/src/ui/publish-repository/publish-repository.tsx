@@ -8,7 +8,8 @@ import { Row } from '../lib/row'
 import { merge } from '../../lib/merge'
 import { caseInsensitiveCompare } from '../../lib/compare'
 import { sanitizedRepositoryName } from '../add-repository/sanitized-repository-name'
-import { Octicon, OcticonSymbol } from '../octicons'
+import { Octicon } from '../octicons'
+import * as octicons from '../octicons/octicons.generated'
 import { RepositoryPublicationSettings } from '../../models/publish-settings'
 
 interface IPublishRepositoryProps {
@@ -183,7 +184,7 @@ export class PublishRepository extends React.Component<
 
     return (
       <Row className="warning-helper-text">
-        <Octicon symbol={OcticonSymbol.alert} />
+        <Octicon symbol={octicons.alert} />
         Will be created as {sanitizedName}
       </Row>
     )

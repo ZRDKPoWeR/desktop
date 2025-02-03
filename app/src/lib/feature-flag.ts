@@ -21,11 +21,6 @@ function enableDevelopmentFeatures(): boolean {
   return false
 }
 
-/** Should we show progress bars on the Windows app taskbar icon? */
-export function enableProgressBarOnIcon(): boolean {
-  return enableBetaFeatures()
-}
-
 /** Should the app enable beta features? */
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 //@ts-ignore: this will be used again in the future
@@ -33,9 +28,20 @@ function enableBetaFeatures(): boolean {
   return enableDevelopmentFeatures() || __RELEASE_CHANNEL__ === 'beta'
 }
 
+/**
+ * Should the app show menu items that are used for testing various parts of the
+ * UI
+ *
+ * For our own testing purposes, this will likely remain enabled. But, sometimes
+ * we may want to create a test release for a user to test a fix in which case
+ * they should not need access to the test menu items.
+ */
+export const enableTestMenuItems = () =>
+  enableDevelopmentFeatures() || __RELEASE_CHANNEL__ === 'test'
+
 /** Should git pass `--recurse-submodules` when performing operations? */
 export function enableRecurseSubmodulesFlag(): boolean {
-  return enableBetaFeatures()
+  return true
 }
 
 export function enableReadmeOverwriteWarning(): boolean {
@@ -47,23 +53,6 @@ export function enableWSLDetection(): boolean {
   return enableBetaFeatures()
 }
 
-/** Should the app show hide whitespace in changes tab */
-export function enableHideWhitespaceInDiffOption(): boolean {
-  return true
-}
-
-/** Should the app use the shiny new TCP-based trampoline? */
-export function enableDesktopTrampoline(): boolean {
-  return true
-}
-
-/**
- * Should we use the new diff viewer for unified diffs?
- */
-export function enableExperimentalDiffViewer(): boolean {
-  return false
-}
-
 /**
  * Should we allow reporting unhandled rejections as if they were crashes?
  */
@@ -71,32 +60,46 @@ export function enableUnhandledRejectionReporting(): boolean {
   return enableBetaFeatures()
 }
 
-/** Should we allow expanding text diffs? */
-export function enableTextDiffExpansion(): boolean {
-  return true
-}
+/**
+ * Should we allow x64 apps running under ARM translation to auto-update to
+ * ARM64 builds?
+ */
+export function enableUpdateFromEmulatedX64ToARM64(): boolean {
+  if (__DARWIN__) {
+    return true
+  }
 
-/** Should we allow apps running from Rosetta to auto-update to ARM64 builds? */
-export function enableUpdateFromRosettaToARM64(): boolean {
   return enableBetaFeatures()
 }
 
-/** Should we allow using the save dialog when choosing where to clone a repo */
-export function enableSaveDialogOnCloneRepository(): boolean {
+/** Should we allow resetting to a previous commit? */
+export function enableResetToCommit(): boolean {
   return true
 }
 
-/** Should we allow setting repository aliases? */
-export function enableRepositoryAliases(): boolean {
+/** Should we allow checking out a single commit? */
+export function enableCheckoutCommit(): boolean {
   return true
 }
 
-/** Should we allow to create branches from a commit? */
-export function enableBranchFromCommit(): boolean {
+/** Should we show previous tags as suggestions? */
+export function enablePreviousTagSuggestions(): boolean {
   return enableBetaFeatures()
 }
 
-/** Should we allow squashing? */
-export function enableSquashing(): boolean {
+/** Should we show a pull-requests quick view? */
+export function enablePullRequestQuickView(): boolean {
   return enableDevelopmentFeatures()
 }
+
+/** Should we support image previews for dds files? */
+export function enableImagePreviewsForDDSFiles(): boolean {
+  return enableBetaFeatures()
+}
+
+export const enableCustomIntegration = () => true
+
+export const enableResizingToolbarButtons = () => true
+export const enableGitConfigParameters = enableBetaFeatures
+
+export const enableFilteredChangesList = enableDevelopmentFeatures

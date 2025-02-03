@@ -9,12 +9,7 @@ import { IStatsStore } from '../../../../src/lib/stats'
 describe('updateConflictState', () => {
   let statsStore: IStatsStore
   beforeEach(() => {
-    statsStore = {
-      recordMergeAbortedAfterConflicts: jest.fn(),
-      recordMergeSuccessAfterConflicts: jest.fn(),
-      recordRebaseAbortedAfterConflicts: jest.fn(),
-      recordRebaseSuccessAfterConflicts: jest.fn(),
-    }
+    statsStore = { increment: jest.fn() }
   })
 
   const manualResolutions = new Map<string, ManualConflictResolution>([
@@ -49,6 +44,7 @@ describe('updateConflictState', () => {
         mergeHeadFound: true,
         currentBranch: 'master',
         currentTip: 'first-sha',
+        doConflictedFilesExist: true,
       })
 
       const conflictState = updateConflictState(prevState, status, statsStore)
@@ -80,7 +76,7 @@ describe('updateConflictState', () => {
       expect(conflictState).toBeNull()
     })
 
-    it('returns a value when status has MERGE_HEAD set', () => {
+    it('returns a value when status has MERGE_HEAD set and in conflicted state', () => {
       const prevState = createState({
         conflictState: null,
       })
@@ -88,6 +84,7 @@ describe('updateConflictState', () => {
         mergeHeadFound: true,
         currentBranch: 'master',
         currentTip: 'first-sha',
+        doConflictedFilesExist: true,
       })
 
       const conflictState = updateConflictState(prevState, status, statsStore)
@@ -113,11 +110,14 @@ describe('updateConflictState', () => {
         mergeHeadFound: true,
         currentBranch: 'master',
         currentTip: 'first-sha',
+        doConflictedFilesExist: true,
       })
 
       updateConflictState(prevState, status, statsStore)
 
-      expect(statsStore.recordMergeAbortedAfterConflicts).toHaveBeenCalled()
+      expect(statsStore.increment).toHaveBeenCalledWith(
+        'mergeAbortedAfterConflictsCount'
+      )
     })
 
     it('increments abort counter when conflict resolved and tip has not changed', () => {
@@ -137,7 +137,9 @@ describe('updateConflictState', () => {
 
       updateConflictState(prevState, status, statsStore)
 
-      expect(statsStore.recordMergeAbortedAfterConflicts).toHaveBeenCalled()
+      expect(statsStore.increment).toHaveBeenCalledWith(
+        'mergeAbortedAfterConflictsCount'
+      )
     })
 
     it('increments success counter when conflict resolved and tip has changed', () => {
@@ -157,7 +159,9 @@ describe('updateConflictState', () => {
 
       updateConflictState(prevState, status, statsStore)
 
-      expect(statsStore.recordMergeSuccessAfterConflicts).toHaveBeenCalled()
+      expect(statsStore.increment).toHaveBeenCalledWith(
+        'mergeSuccessAfterConflictsCount'
+      )
     })
   })
 
@@ -178,7 +182,7 @@ describe('updateConflictState', () => {
       expect(conflictState).toBeNull()
     })
 
-    it('returns a value when status has REBASE_HEAD set', () => {
+    it('returns a value when status has REBASE_HEAD set and conflict present', () => {
       const prevState = createState({
         conflictState: null,
       })
@@ -190,6 +194,7 @@ describe('updateConflictState', () => {
         },
         currentBranch: 'master',
         currentTip: 'first-sha',
+        doConflictedFilesExist: true,
       })
 
       const conflictState = updateConflictState(prevState, status, statsStore)
@@ -223,6 +228,7 @@ describe('updateConflictState', () => {
         },
         currentBranch: 'master',
         currentTip: 'first-sha',
+        doConflictedFilesExist: true,
       })
 
       const conflictState = updateConflictState(prevState, status, statsStore)
@@ -255,11 +261,14 @@ describe('updateConflictState', () => {
           baseBranchTip: 'an-even-older-sha',
         },
         currentTip: 'current-sha',
+        doConflictedFilesExist: true,
       })
 
       updateConflictState(prevState, status, statsStore)
 
-      expect(statsStore.recordRebaseAbortedAfterConflicts).toHaveBeenCalled()
+      expect(statsStore.increment).toHaveBeenCalledWith(
+        'rebaseAbortedAfterConflictsCount'
+      )
     })
 
     it('increments abort counter when conflict resolved but tip has not changed', () => {
@@ -281,7 +290,9 @@ describe('updateConflictState', () => {
 
       updateConflictState(prevState, status, statsStore)
 
-      expect(statsStore.recordRebaseAbortedAfterConflicts).toHaveBeenCalled()
+      expect(statsStore.increment).toHaveBeenCalledWith(
+        'rebaseAbortedAfterConflictsCount'
+      )
     })
 
     it('does not increment aborted counter when conflict resolved and tip has changed', () => {
@@ -303,9 +314,9 @@ describe('updateConflictState', () => {
 
       updateConflictState(prevState, status, statsStore)
 
-      expect(
-        statsStore.recordRebaseAbortedAfterConflicts
-      ).not.toHaveBeenCalled()
+      expect(statsStore.increment).not.toHaveBeenCalledWith(
+        'rebaseAbortedAfterConflictsCount'
+      )
     })
   })
 })
