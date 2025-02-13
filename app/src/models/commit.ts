@@ -2,6 +2,11 @@ import { CommitIdentity } from './commit-identity'
 import { ITrailer, isCoAuthoredByTrailer } from '../lib/git/interpret-trailers'
 import { GitAuthor } from './git-author'
 
+/** Shortens a given SHA. */
+export function shortenSHA(sha: string) {
+  return sha.slice(0, 7)
+}
+
 /** Grouping of information required to create a commit */
 export interface ICommitContext {
   /**
@@ -12,6 +17,10 @@ export interface ICommitContext {
    * Additional details for the commit message (optional)
    */
   readonly description: string | null
+  /**
+   * Whether or not it should amend the last commit (optional, default: false)
+   */
+  readonly amend?: boolean
   /**
    * An optional array of commit trailers (for example Co-Authored-By trailers) which will be appended to the commit message in accordance with the Git trailer configuration.
    */
@@ -84,6 +93,11 @@ export class Commit {
   public readonly authoredByCommitter: boolean
 
   /**
+   * Whether or not the commit is a merge commit (i.e. has at least 2 parents)
+   */
+  public readonly isMergeCommit: boolean
+
+  /**
    * @param sha The commit's SHA.
    * @param shortSha The commit's shortSHA.
    * @param summary The first line of the commit message.
@@ -115,5 +129,7 @@ export class Commit {
       this.author.email === this.committer.email
 
     this.bodyNoCoAuthors = trimCoAuthorsTrailers(trailers, body)
+
+    this.isMergeCommit = parentSHAs.length > 1
   }
 }

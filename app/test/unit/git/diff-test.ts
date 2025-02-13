@@ -5,6 +5,7 @@ import { Repository } from '../../../src/models/repository'
 import {
   WorkingDirectoryFileChange,
   AppFileStatusKind,
+  FileChange,
 } from '../../../src/models/status'
 import {
   ITextDiff,
@@ -12,6 +13,7 @@ import {
   DiffSelectionType,
   DiffSelection,
   DiffType,
+  ISubmoduleDiff,
 } from '../../../src/models/diff'
 import {
   setupFixtureRepository,
@@ -23,10 +25,15 @@ import {
   getWorkingDirectoryImage,
   getBlobImage,
   getBinaryPaths,
+  getBranchMergeBaseChangedFiles,
+  getBranchMergeBaseDiff,
+  git,
 } from '../../../src/lib/git'
 import { getStatusOrThrow } from '../../helpers/status'
 
-import { GitProcess } from 'dugite'
+import { GitError as DugiteError, exec } from 'dugite'
+import { makeCommit, switchTo } from '../../helpers/repository-scaffolding'
+import { writeFile } from 'fs/promises'
 
 async function getTextDiff(
   repo: Repository,
@@ -259,9 +266,9 @@ describe('git/diff', () => {
 
       await FSE.writeFile(path.join(repo.path, 'foo'), 'foo\n')
 
-      await GitProcess.exec(['add', 'foo'], repo.path)
-      await GitProcess.exec(['commit', '-m', 'Initial commit'], repo.path)
-      await GitProcess.exec(['mv', 'foo', 'bar'], repo.path)
+      await exec(['add', 'foo'], repo.path)
+      await exec(['commit', '-m', 'Initial commit'], repo.path)
+      await exec(['mv', 'foo', 'bar'], repo.path)
 
       const status = await getStatusOrThrow(repo)
       const files = status.workingDirectory.files
@@ -282,9 +289,9 @@ describe('git/diff', () => {
 
       await FSE.writeFile(path.join(repo.path, 'foo'), 'foo\n')
 
-      await GitProcess.exec(['add', 'foo'], repo.path)
-      await GitProcess.exec(['commit', '-m', 'Initial commit'], repo.path)
-      await GitProcess.exec(['mv', 'foo', 'bar'], repo.path)
+      await exec(['add', 'foo'], repo.path)
+      await exec(['commit', '-m', 'Initial commit'], repo.path)
+      await exec(['mv', 'foo', 'bar'], repo.path)
 
       await FSE.writeFile(path.join(repo.path, 'bar'), 'bar\n')
 
@@ -311,7 +318,7 @@ describe('git/diff', () => {
         'WRITING THE FIRST LINE\n'
       )
 
-      await GitProcess.exec(['add', 'foo'], repo.path)
+      await exec(['add', 'foo'], repo.path)
 
       await FSE.writeFile(path.join(repo.path, 'foo'), 'WRITING OVER THE TOP\n')
 
@@ -342,14 +349,11 @@ describe('git/diff', () => {
         `WRITING MANY LINES ${lineEnding} USING THIS LINE ENDING ${lineEnding} TO SHOW THAT GIT${lineEnding} WILL INSERT IT WITHOUT CHANGING THING ${lineEnding} HA HA BUSINESS`
       )
 
-      await GitProcess.exec(['add', 'foo'], repo.path)
-      await GitProcess.exec(
-        ['commit', '-m', 'commit first file with LF'],
-        repo.path
-      )
+      await exec(['add', 'foo'], repo.path)
+      await exec(['commit', '-m', 'commit first file with LF'], repo.path)
 
       // change config on-the-fly to trigger the line endings change warning
-      await GitProcess.exec(['config', 'core.autocrlf', 'true'], repo.path)
+      await exec(['config', 'core.autocrlf', 'true'], repo.path)
       lineEnding = '\n\n'
 
       await FSE.writeFile(
@@ -394,9 +398,45 @@ describe('git/diff', () => {
         repo = await setupEmptyRepository()
       })
       it('throws since HEAD doesnt exist', () => {
-        expect(getBinaryPaths(repo, 'HEAD')).rejects.toThrow()
+        expect(getBinaryPaths(repo, 'HEAD', [])).rejects.toThrow()
       })
     })
+
+    describe('with files using binary merge driver', () => {
+      let repo: Repository
+      beforeEach(async () => {
+        repo = await setupEmptyRepository()
+        writeFile(path.join(repo.path, 'foo.bin'), 'foo\n')
+        writeFile(
+          path.join(repo.path, '.gitattributes'),
+          '*.bin merge=binary\n'
+        )
+        await git(['add', '.'], repo.path, '')
+        await git(['commit', '-m', 'initial'], repo.path, '')
+        await git(['checkout', '-b', 'branch-a'], repo.path, '')
+        await writeFile(path.join(repo.path, 'foo.bin'), 'bar\n')
+        await git(['commit', '-a', '-m', 'second'], repo.path, '')
+        await git(['checkout', '-'], repo.path, '')
+        await writeFile(path.join(repo.path, 'foo.bin'), 'foozball\n')
+        await git(['commit', '-a', '-m', 'third'], repo.path, '')
+        await git(['merge', 'branch-a'], repo.path, '', {
+          expectedErrors: new Set([DugiteError.MergeConflicts]),
+        })
+      })
+      it('includes plain text files using binary driver', async () => {
+        expect(
+          await getBinaryPaths(repo, 'MERGE_HEAD', [
+            {
+              kind: 'entry',
+              path: 'foo.bin',
+              statusCode: 'UU',
+              submoduleStatusCode: '????',
+            },
+          ])
+        ).toEqual(['foo.bin'])
+      })
+    })
+
     describe('in repo with text only files', () => {
       let repo: Repository
       beforeEach(async () => {
@@ -404,7 +444,7 @@ describe('git/diff', () => {
         repo = new Repository(testRepoPath, -1, null, false)
       })
       it('returns an empty array', async () => {
-        expect(await getBinaryPaths(repo, 'HEAD')).toHaveLength(0)
+        expect(await getBinaryPaths(repo, 'HEAD', [])).toHaveLength(0)
       })
     })
     describe('in repo with image changes', () => {
@@ -416,7 +456,7 @@ describe('git/diff', () => {
         repo = new Repository(testRepoPath, -1, null, false)
       })
       it('returns all changed image files', async () => {
-        expect(await getBinaryPaths(repo, 'HEAD')).toEqual([
+        expect(await getBinaryPaths(repo, 'HEAD', [])).toEqual([
           'modified-image.jpg',
           'new-animated-image.gif',
           'new-image.png',
@@ -430,14 +470,235 @@ describe('git/diff', () => {
           'detect-conflict-in-binary-file'
         )
         repo = new Repository(testRepoPath, -1, null, false)
-        await GitProcess.exec(['checkout', 'make-a-change'], repo.path)
-        await GitProcess.exec(['merge', 'master'], repo.path)
+        await exec(['checkout', 'make-a-change'], repo.path)
+        await exec(['merge', 'master'], repo.path)
       })
       it('returns all conflicted image files', async () => {
-        expect(await getBinaryPaths(repo, 'MERGE_HEAD')).toEqual([
+        expect(await getBinaryPaths(repo, 'MERGE_HEAD', [])).toEqual([
           'my-cool-image.png',
         ])
       })
+    })
+  })
+
+  describe('with submodules', () => {
+    const submoduleRelativePath: string = path.join('foo', 'submodule')
+    let submodulePath: string
+
+    const getSubmoduleDiff = async () => {
+      const status = await getStatusOrThrow(repository)
+      const file = status.workingDirectory.files[0]
+      const diff = await getWorkingDirectoryDiff(repository, file)
+      expect(diff.kind).toBe(DiffType.Submodule)
+
+      return diff as ISubmoduleDiff
+    }
+
+    beforeEach(async () => {
+      const repoPath = await setupFixtureRepository('submodule-basic-setup')
+      repository = new Repository(repoPath, -1, null, false)
+      submodulePath = path.join(repoPath, submoduleRelativePath)
+    })
+
+    it('can get the diff for a submodule with the right paths', async () => {
+      // Just make any change to the submodule to get a diff
+      await FSE.writeFile(path.join(submodulePath, 'README.md'), 'hello\n')
+
+      const diff = await getSubmoduleDiff()
+      expect(diff.fullPath).toBe(submodulePath)
+      // Even on Windows, the path separator is '/' for this specific attribute
+      expect(diff.path).toBe('foo/submodule')
+    })
+
+    it('can get the diff for a submodule with only modified changes', async () => {
+      // Modify README.md file. Now the submodule has modified changes.
+      await FSE.writeFile(path.join(submodulePath, 'README.md'), 'hello\n')
+
+      const diff = await getSubmoduleDiff()
+      expect(diff.oldSHA).toBeNull()
+      expect(diff.newSHA).toBeNull()
+      expect(diff.status).toMatchObject({
+        commitChanged: false,
+        modifiedChanges: true,
+        untrackedChanges: false,
+      })
+    })
+
+    it('can get the diff for a submodule with only untracked changes', async () => {
+      // Create NEW.md file. Now the submodule has untracked changes.
+      await FSE.writeFile(path.join(submodulePath, 'NEW.md'), 'hello\n')
+
+      const diff = await getSubmoduleDiff()
+      expect(diff.oldSHA).toBeNull()
+      expect(diff.newSHA).toBeNull()
+      expect(diff.status).toMatchObject({
+        commitChanged: false,
+        modifiedChanges: false,
+        untrackedChanges: true,
+      })
+    })
+
+    it('can get the diff for a submodule a commit change', async () => {
+      // Make a change and commit it. Now the submodule has a commit change.
+      await FSE.writeFile(path.join(submodulePath, 'README.md'), 'hello\n')
+      await exec(['commit', '-a', '-m', 'test'], submodulePath)
+
+      const diff = await getSubmoduleDiff()
+      expect(diff.oldSHA).not.toBeNull()
+      expect(diff.newSHA).not.toBeNull()
+      expect(diff.status).toMatchObject({
+        commitChanged: true,
+        modifiedChanges: false,
+        untrackedChanges: false,
+      })
+    })
+
+    it('can get the diff for a submodule a all kinds of changes', async () => {
+      await FSE.writeFile(path.join(submodulePath, 'README.md'), 'hello\n')
+      await exec(['commit', '-a', '-m', 'test'], submodulePath)
+      await FSE.writeFile(path.join(submodulePath, 'README.md'), 'bye\n')
+      await FSE.writeFile(path.join(submodulePath, 'NEW.md'), 'new!!\n')
+
+      const diff = await getSubmoduleDiff()
+      expect(diff.oldSHA).not.toBeNull()
+      expect(diff.newSHA).not.toBeNull()
+      expect(diff.status).toMatchObject({
+        commitChanged: true,
+        modifiedChanges: true,
+        untrackedChanges: true,
+      })
+    })
+  })
+
+  describe('getBranchMergeBaseChangedFiles', () => {
+    it('loads the files changed between two branches if merged', async () => {
+      // create feature branch from initial master commit
+      await exec(['branch', 'feature-branch'], repository.path)
+
+      const firstCommit = {
+        entries: [{ path: 'A.md', contents: 'A' }],
+      }
+      await makeCommit(repository, firstCommit)
+
+      // switch to the feature branch and add feature.md and add foo.md
+      await switchTo(repository, 'feature-branch')
+
+      const secondCommit = {
+        entries: [{ path: 'feature.md', contents: 'feature' }],
+      }
+      await makeCommit(repository, secondCommit)
+
+      /*
+        Now, we have:
+
+           B
+        A  |  -- Feature
+        |  /
+        I -- Master
+
+        If we did `git diff master feature`, we would see files changes
+        from just A and B.
+
+        We are testing `git diff --merge-base master feature`, which will
+        display the diff of the resulting merge of `feature` into `master`.
+        Thus, we will see changes from B only.
+      */
+
+      const changesetData = await getBranchMergeBaseChangedFiles(
+        repository,
+        'master',
+        'feature-branch',
+        'irrelevantToTest'
+      )
+
+      expect(changesetData).not.toBeNull()
+      if (changesetData === null) {
+        return
+      }
+
+      expect(changesetData.files).toHaveLength(1)
+      expect(changesetData.files[0].path).toBe('feature.md')
+    })
+
+    it('returns null for unrelated histories', async () => {
+      // create a second branch that's orphaned from our current branch
+      await exec(['checkout', '--orphan', 'orphaned-branch'], repository.path)
+
+      // add a commit to this new branch
+      await exec(
+        ['commit', '--allow-empty', '-m', `first commit on gh-pages`],
+        repository.path
+      )
+
+      const changesetData = await getBranchMergeBaseChangedFiles(
+        repository,
+        'master',
+        'feature-branch',
+        'irrelevantToTest'
+      )
+
+      expect(changesetData).toBeNull()
+    })
+  })
+
+  describe('getBranchMergeBaseDiff', () => {
+    it('loads the diff of a file between two branches if merged', async () => {
+      // Add foo.md to master
+      const fooPath = path.join(repository.path, 'foo.md')
+      await FSE.writeFile(fooPath, 'foo\n')
+      await exec(['commit', '-a', '-m', 'foo'], repository.path)
+
+      // Create feature branch from commit with foo.md
+      await exec(['branch', 'feature-branch'], repository.path)
+
+      // Commit a line "bar" to foo.md on master branch
+      await FSE.appendFile(fooPath, 'bar\n')
+      await exec(['add', fooPath], repository.path)
+      await exec(['commit', '-m', 'A'], repository.path)
+
+      // switch to the feature branch and add feature to foo.md
+      await switchTo(repository, 'feature-branch')
+
+      // Commit a line of "feature" to foo.md on feature branch
+      await FSE.appendFile(fooPath, 'feature\n')
+      await exec(['add', fooPath], repository.path)
+      await exec(['commit', '-m', 'B'], repository.path)
+
+      /*
+        Now, we have:
+
+           B
+        A  |  -- Feature
+        |  /
+        Foo -- Master
+
+        A adds line of "bar" to foo.md
+        B adds line "feature" to foo.md
+
+        If we did `git diff master feature`, we would see both lines
+        "bar" and "feature" added to foo.md
+
+        We are testing `git diff --merge-base master feature`, which will
+        display the diff of the resulting merge of `feature` into `master`.
+        Thus, we will see changes from B only or the line "feature".
+      */
+
+      const diff = await getBranchMergeBaseDiff(
+        repository,
+        new FileChange('foo.md', { kind: AppFileStatusKind.New }),
+        'master',
+        'feature-branch',
+        false,
+        'irrelevantToTest'
+      )
+      expect(diff.kind).toBe(DiffType.Text)
+
+      if (diff.kind !== DiffType.Text) {
+        return
+      }
+
+      expect(diff.text).not.toContain('bar')
+      expect(diff.text).toContain('feature')
     })
   })
 })

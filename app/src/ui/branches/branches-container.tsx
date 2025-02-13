@@ -5,7 +5,7 @@ import {
   Repository,
   isRepositoryWithGitHubRepository,
 } from '../../models/repository'
-import { Branch, BranchType } from '../../models/branch'
+import { Branch } from '../../models/branch'
 import { BranchesTab } from '../../models/branches-tab'
 import { PopupType } from '../../models/popup'
 
@@ -16,17 +16,28 @@ import { assertNever } from '../../lib/fatal-error'
 import { TabBar } from '../tab-bar'
 
 import { Row } from '../lib/row'
-import { Octicon, OcticonSymbol } from '../octicons'
+import { Octicon } from '../octicons'
+import * as octicons from '../octicons/octicons.generated'
 import { Button } from '../lib/button'
 
 import { BranchList } from './branch-list'
 import { PullRequestList } from './pull-request-list'
 import { IBranchListItem } from './group-branches'
-import { renderDefaultBranch } from './branch-renderer'
+import {
+  getDefaultAriaLabelForBranch,
+  renderDefaultBranch,
+} from './branch-renderer'
 import { IMatches } from '../../lib/fuzzy-find'
 import { startTimer } from '../lib/timing'
 import { dragAndDropManager } from '../../lib/drag-and-drop-manager'
 import { DragType, DropTargetType } from '../../models/drag-drop'
+import {
+  enablePullRequestQuickView,
+  enableResizingToolbarButtons,
+} from '../../lib/feature-flag'
+import { PullRequestQuickView } from '../pull-request-quick-view'
+import { Emoji } from '../../lib/emoji'
+import classNames from 'classnames'
 
 interface IBranchesContainerProps {
   readonly dispatcher: Dispatcher
@@ -37,12 +48,19 @@ interface IBranchesContainerProps {
   readonly currentBranch: Branch | null
   readonly recentBranches: ReadonlyArray<Branch>
   readonly pullRequests: ReadonlyArray<PullRequest>
+  readonly onRenameBranch: (branchName: string) => void
+  readonly onDeleteBranch: (branchName: string) => void
 
   /** The pull request associated with the current branch. */
   readonly currentPullRequest: PullRequest | null
 
   /** Are we currently loading pull requests? */
   readonly isLoadingPullRequests: boolean
+
+  /** Map from the emoji shortcut (e.g., :+1:) to the image's local path. */
+  readonly emoji: Map<string, Emoji>
+
+  readonly underlineLinks: boolean
 }
 
 interface IBranchesContainerState {
@@ -55,6 +73,10 @@ interface IBranchesContainerState {
   readonly selectedPullRequest: PullRequest | null
   readonly selectedBranch: Branch | null
   readonly branchFilterText: string
+  readonly pullRequestBeingViewed: {
+    pr: PullRequest
+    prListItemTop: number
+  } | null
 }
 
 /** The unified Branches and Pull Requests component. */
@@ -76,6 +98,8 @@ export class BranchesContainer extends React.Component<
     return null
   }
 
+  private pullRequestQuickViewTimerId: number | null = null
+
   public constructor(props: IBranchesContainerProps) {
     super(props)
 
@@ -84,17 +108,60 @@ export class BranchesContainer extends React.Component<
       selectedPullRequest: props.currentPullRequest,
       currentPullRequest: props.currentPullRequest,
       branchFilterText: '',
+      pullRequestBeingViewed: null,
     }
   }
 
+  public componentWillUnmount = () => {
+    this.clearPullRequestQuickViewTimer()
+  }
+
   public render() {
+    const classes = classNames('branches-container', {
+      resizable: enableResizingToolbarButtons(),
+    })
     return (
-      <div className="branches-container">
+      <div className={classes}>
         {this.renderTabBar()}
         {this.renderSelectedTab()}
         {this.renderMergeButtonRow()}
+        {this.renderPullRequestQuickView()}
       </div>
     )
+  }
+
+  private renderPullRequestQuickView = (): JSX.Element | null => {
+    if (
+      !enablePullRequestQuickView() ||
+      this.state.pullRequestBeingViewed === null
+    ) {
+      return null
+    }
+
+    const { pr, prListItemTop } = this.state.pullRequestBeingViewed
+
+    return (
+      <PullRequestQuickView
+        dispatcher={this.props.dispatcher}
+        emoji={this.props.emoji}
+        pullRequest={pr}
+        pullRequestItemTop={prListItemTop}
+        onMouseEnter={this.onMouseEnterPullRequestQuickView}
+        onMouseLeave={this.onMouseLeavePullRequestQuickView}
+        underlineLinks={this.props.underlineLinks}
+      />
+    )
+  }
+
+  private onMouseEnterPullRequestQuickView = () => {
+    this.clearPullRequestQuickViewTimer()
+  }
+
+  private onMouseLeavePullRequestQuickView = () => {
+    this.setState({
+      pullRequestBeingViewed: null,
+    })
+    this.clearPullRequestQuickViewTimer()
   }
 
   private renderMergeButtonRow() {
@@ -108,11 +175,13 @@ export class BranchesContainer extends React.Component<
 
     return (
       <Row className="merge-button-row">
-        <Button className="merge-button" onClick={this.onMergeClick}>
-          <Octicon className="icon" symbol={OcticonSymbol.gitMerge} />
-          <span title={`Merge a branch into ${currentBranch.name}`}>
-            Choose a branch to merge into <strong>{currentBranch.name}</strong>
-          </span>
+        <Button
+          className="merge-button"
+          onClick={this.onMergeClick}
+          tooltip={`Choose a branch to merge into ${currentBranch.name}`}
+        >
+          <Octicon className="icon" symbol={octicons.gitMerge} />
+          Choose a branch to merge into <strong>{currentBranch.name}</strong>
         </Button>
       </Row>
     )
@@ -139,8 +208,8 @@ export class BranchesContainer extends React.Component<
         selectedIndex={this.props.selectedTab}
         allowDragOverSwitching={true}
       >
-        <span>Branches</span>
-        <span className="pull-request-tab">
+        <span id="branches-tab">Branches</span>
+        <span id="pull-requests-tab" className="pull-request-tab">
           {__DARWIN__ ? 'Pull Requests' : 'Pull requests'}
           {this.renderOpenPullRequestsBubble()}
         </span>
@@ -148,20 +217,50 @@ export class BranchesContainer extends React.Component<
     )
   }
 
-  private renderBranch = (item: IBranchListItem, matches: IMatches) => {
+  private renderBranch = (
+    item: IBranchListItem,
+    matches: IMatches,
+    authorDate: Date | undefined
+  ) => {
     return renderDefaultBranch(
       item,
       matches,
       this.props.currentBranch,
-      this.onRenameBranch,
-      this.onDeleteBranch,
+      authorDate,
       this.onDropOntoBranch,
       this.onDropOntoCurrentBranch
     )
   }
 
+  private getBranchAriaLabel = (
+    item: IBranchListItem,
+    authorDate: Date | undefined
+  ): string => {
+    return getDefaultAriaLabelForBranch(item, authorDate)
+  }
+
   private renderSelectedTab() {
+    const { selectedTab, repository } = this.props
+
+    const ariaLabelledBy =
+      selectedTab === BranchesTab.Branches || !repository.gitHubRepository
+        ? 'branches-tab'
+        : 'pull-requests-tab'
+
+    return (
+      <div
+        role="tabpanel"
+        aria-labelledby={ariaLabelledBy}
+        className="branches-container-panel"
+      >
+        {this.renderSelectedTabContent()}
+      </div>
+    )
+  }
+
+  private renderSelectedTabContent() {
     let tab = this.props.selectedTab
+
     if (!this.props.repository.gitHubRepository) {
       tab = BranchesTab.Branches
     }
@@ -170,6 +269,7 @@ export class BranchesContainer extends React.Component<
       case BranchesTab.Branches:
         return (
           <BranchList
+            repository={this.props.repository}
             defaultBranch={this.props.defaultBranch}
             currentBranch={this.props.currentBranch}
             allBranches={this.props.allBranches}
@@ -182,13 +282,15 @@ export class BranchesContainer extends React.Component<
             canCreateNewBranch={true}
             onCreateNewBranch={this.onCreateBranchWithName}
             renderBranch={this.renderBranch}
+            getBranchAriaLabel={this.getBranchAriaLabel}
             hideFilterRow={dragAndDropManager.isDragOfTypeInProgress(
               DragType.Commit
             )}
             renderPreList={this.renderPreList}
+            onRenameBranch={this.props.onRenameBranch}
+            onDeleteBranch={this.props.onDeleteBranch}
           />
         )
-
       case BranchesTab.PullRequests: {
         return this.renderPullRequests()
       }
@@ -205,16 +307,19 @@ export class BranchesContainer extends React.Component<
     const label = __DARWIN__ ? 'New Branch' : 'New branch'
 
     return (
+      /**
+       * This a11y linter is a false-positive as the element is a drop target
+       * facilitating our drag and drop functionality for cherry-picking.
+       */
+      // eslint-disable-next-line jsx-a11y/no-static-element-interactions
       <div
         className="branches-list-item new-branch-drop"
         onMouseEnter={this.onMouseEnterNewBranchDrop}
         onMouseLeave={this.onMouseLeaveNewBranchDrop}
         onMouseUp={this.onMouseUpNewBranchDrop}
       >
-        <Octicon className="icon" symbol={OcticonSymbol.plus} />
-        <div className="name" title={label}>
-          {label}
-        </div>
+        <Octicon className="icon" symbol={octicons.plus} />
+        <div className="name">{label}</div>
       </div>
     )
   }
@@ -225,16 +330,18 @@ export class BranchesContainer extends React.Component<
       return
     }
 
-    await this.props.dispatcher.setCherryPickCreateBranchFlowStep(
-      this.props.repository,
-      ''
+    const { dispatcher, repository, currentBranch } = this.props
+
+    await dispatcher.setCherryPickCreateBranchFlowStep(
+      repository,
+      '',
+      dragData.commits,
+      currentBranch
     )
 
     this.props.dispatcher.showPopup({
-      type: PopupType.CherryPick,
-      repository: this.props.repository,
-      commits: dragData.commits,
-      sourceBranch: this.props.currentBranch,
+      type: PopupType.MultiCommitOperation,
+      repository,
     })
   }
 
@@ -270,11 +377,32 @@ export class BranchesContainer extends React.Component<
         isOnDefaultBranch={!!isOnDefaultBranch}
         onSelectionChanged={this.onPullRequestSelectionChanged}
         onCreateBranch={this.onCreateBranch}
-        onDismiss={this.onDismiss}
         dispatcher={this.props.dispatcher}
         repository={repository}
         isLoadingPullRequests={this.props.isLoadingPullRequests}
+        onMouseEnterPullRequest={this.onMouseEnterPullRequestListItem}
+        onMouseLeavePullRequest={this.onMouseLeavePullRequestListItem}
       />
+    )
+  }
+
+  private onMouseEnterPullRequestListItem = (
+    pr: PullRequest,
+    prListItemTop: number
+  ) => {
+    this.clearPullRequestQuickViewTimer()
+    this.setState({ pullRequestBeingViewed: null })
+    this.pullRequestQuickViewTimerId = window.setTimeout(
+      () => this.setState({ pullRequestBeingViewed: { pr, prListItemTop } }),
+      250
+    )
+  }
+
+  private onMouseLeavePullRequestListItem = async () => {
+    this.clearPullRequestQuickViewTimer()
+    this.pullRequestQuickViewTimerId = window.setTimeout(
+      () => this.setState({ pullRequestBeingViewed: null }),
+      500
     )
   }
 
@@ -282,16 +410,9 @@ export class BranchesContainer extends React.Component<
     this.props.dispatcher.changeBranchesTab(tab)
   }
 
-  private onDismiss = () => {
-    this.props.dispatcher.closeFoldout(FoldoutType.Branch)
-  }
-
   private onMergeClick = () => {
     this.props.dispatcher.closeFoldout(FoldoutType.Branch)
-    this.props.dispatcher.showPopup({
-      type: PopupType.MergeBranch,
-      repository: this.props.repository,
-    })
+    this.props.dispatcher.startMergeBranchOperation(this.props.repository)
   }
 
   private onBranchItemClick = (branch: Branch) => {
@@ -331,52 +452,6 @@ export class BranchesContainer extends React.Component<
     this.setState({ selectedPullRequest })
   }
 
-  private getBranchWithName(branchName: string): Branch | undefined {
-    return this.props.allBranches.find(branch => branch.name === branchName)
-  }
-
-  private onRenameBranch = (branchName: string) => {
-    const branch = this.getBranchWithName(branchName)
-
-    if (branch === undefined) {
-      return
-    }
-
-    this.props.dispatcher.showPopup({
-      type: PopupType.RenameBranch,
-      repository: this.props.repository,
-      branch: branch,
-    })
-  }
-
-  private onDeleteBranch = async (branchName: string) => {
-    const branch = this.getBranchWithName(branchName)
-
-    if (branch === undefined) {
-      return
-    }
-
-    if (branch.type === BranchType.Remote) {
-      this.props.dispatcher.showPopup({
-        type: PopupType.DeleteRemoteBranch,
-        repository: this.props.repository,
-        branch,
-      })
-      return
-    }
-
-    const aheadBehind = await this.props.dispatcher.getBranchAheadBehind(
-      this.props.repository,
-      branch
-    )
-    this.props.dispatcher.showPopup({
-      type: PopupType.DeleteBranch,
-      repository: this.props.repository,
-      branch,
-      existsOnRemote: aheadBehind !== null,
-    })
-  }
-
   /**
    * Method is to handle when something is dragged and dropped onto a branch
    * in the branch dropdown.
@@ -407,7 +482,16 @@ export class BranchesContainer extends React.Component<
 
   private onDropOntoCurrentBranch = () => {
     if (dragAndDropManager.isDragOfType(DragType.Commit)) {
-      this.props.dispatcher.recordCherryPickDragStartedAndCanceled()
+      this.props.dispatcher.incrementMetric('dragStartedAndCanceledCount')
     }
+  }
+
+  private clearPullRequestQuickViewTimer = () => {
+    if (this.pullRequestQuickViewTimerId === null) {
+      return
+    }
+
+    window.clearTimeout(this.pullRequestQuickViewTimerId)
+    this.pullRequestQuickViewTimerId = null
   }
 }

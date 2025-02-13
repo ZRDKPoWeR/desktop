@@ -77,7 +77,6 @@ export class VerticalSegmentedControl<T extends Key> extends React.Component<
   IVerticalSegmentedControlProps<T>,
   IVerticalSegmentedControlState
 > {
-  private listRef: HTMLUListElement | null = null
   private formRef: HTMLFormElement | null = null
 
   public constructor(props: IVerticalSegmentedControlProps<T>) {
@@ -116,10 +115,25 @@ export class VerticalSegmentedControl<T extends Key> extends React.Component<
     }
   }
 
+  private submitForm() {
+    const form = this.formRef
+    if (form) {
+      // NB: In order to play nicely with React's custom event dispatching,
+      // we dispatch an event instead of calling `submit` directly on the
+      // form.
+      form.dispatchEvent(new Event('submit'))
+    }
+  }
+
   private onItemClick = (key: T) => {
     if (key !== this.props.selectedKey) {
       this.props.onSelectionChanged(key)
     }
+  }
+
+  private onItemDoubleClick = (key: T) => {
+    this.onItemClick(key)
+    this.submitForm()
   }
 
   private getListItemId(index: number) {
@@ -136,6 +150,7 @@ export class VerticalSegmentedControl<T extends Key> extends React.Component<
         isSelected={item.key === this.props.selectedKey}
         value={item.key}
         onClick={this.onItemClick}
+        onDoubleClick={this.onItemDoubleClick}
       />
     )
   }
@@ -154,28 +169,12 @@ export class VerticalSegmentedControl<T extends Key> extends React.Component<
       }
       event.preventDefault()
     } else if (event.key === 'Enter') {
-      const form = this.formRef
-      if (form) {
-        // NB: In order to play nicely with React's custom event dispatching,
-        // we dispatch an event instead of calling `submit` directly on the
-        // form.
-        form.dispatchEvent(new Event('submit'))
-      }
+      this.submitForm()
     }
-  }
-
-  private onListRef = (ref: HTMLUListElement | null) => {
-    this.listRef = ref
   }
 
   private onFieldsetRef = (ref: HTMLFieldSetElement | null) => {
     this.formRef = ref ? ref.form : null
-  }
-
-  private onLegendClick = () => {
-    if (this.listRef) {
-      this.listRef.focus()
-    }
   }
 
   public render() {
@@ -184,7 +183,7 @@ export class VerticalSegmentedControl<T extends Key> extends React.Component<
     }
 
     const label = this.props.label ? (
-      <legend onClick={this.onLegendClick}>{this.props.label}</legend>
+      <legend>{this.props.label}</legend>
     ) : undefined
 
     const selectedIndex = this.findSelectedIndex(this.props.items)
@@ -197,7 +196,6 @@ export class VerticalSegmentedControl<T extends Key> extends React.Component<
       <fieldset className="vertical-segmented-control" ref={this.onFieldsetRef}>
         {label}
         <ul
-          ref={this.onListRef}
           id={this.state.listId}
           className="vertical-segmented-control"
           tabIndex={0}

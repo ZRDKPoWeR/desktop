@@ -1,6 +1,18 @@
 import { getDotComAPIEndpoint, IAPIEmail } from '../lib/api'
 
 /**
+ * Returns a value indicating whether two account instances
+ * can be considered equal. Equality is determined by comparing
+ * the two instances' endpoints and user id. This allows
+ * us to keep receiving updated Account details from the API
+ * while still maintaining the association between repositories
+ * and a particular account.
+ */
+export function accountEquals(x: Account, y: Account) {
+  return x.endpoint === y.endpoint && x.id === y.id
+}
+
+/**
  * A GitHub account, representing the user found on GitHub The Website or GitHub Enterprise.
  *
  * This contains a token that will be used for operations that require authentication.
@@ -8,7 +20,7 @@ import { getDotComAPIEndpoint, IAPIEmail } from '../lib/api'
 export class Account {
   /** Create an account which can be used to perform unauthenticated API actions */
   public static anonymous(): Account {
-    return new Account('', getDotComAPIEndpoint(), '', [], '', -1, '')
+    return new Account('', getDotComAPIEndpoint(), '', [], '', -1, '', 'free')
   }
 
   /**
@@ -29,7 +41,8 @@ export class Account {
     public readonly emails: ReadonlyArray<IAPIEmail>,
     public readonly avatarURL: string,
     public readonly id: number,
-    public readonly name: string
+    public readonly name: string,
+    public readonly plan?: string
   ) {}
 
   public withToken(token: string): Account {
@@ -40,7 +53,8 @@ export class Account {
       this.emails,
       this.avatarURL,
       this.id,
-      this.name
+      this.name,
+      this.plan
     )
   }
 

@@ -1,19 +1,10 @@
-import { GitError as DugiteError } from 'dugite'
-
-import {
-  git,
-  IGitExecutionOptions,
-  gitNetworkArguments,
-  GitError,
-} from './core'
+import { git, IGitStringExecutionOptions } from './core'
 import { Repository } from '../../models/repository'
 import { IPushProgress } from '../../models/progress'
-import { IGitAccount } from '../../models/git-account'
 import { PushProgressParser, executionOptionsWithProgress } from '../progress'
-import { AuthenticationErrors } from './authentication'
 import { IRemote } from '../../models/remote'
-import { merge } from '../merge'
-import { withTrampolineEnvForRemoteOperation } from '../trampoline/trampoline-environment'
+import { envForRemoteOperation } from './environment'
+import { Branch } from '../../models/branch'
 
 export type PushOptions = {
   /**
@@ -23,6 +14,9 @@ export type PushOptions = {
    * See https://git-scm.com/docs/git-push#Documentation/git-push.txt---no-force-with-lease
    */
   readonly forceWithLease: boolean
+
+  /** A branch to push instead of the current branch */
+  readonly branch?: Branch
 }
 
 /**
@@ -51,7 +45,6 @@ export type PushOptions = {
  */
 export async function push(
   repository: Repository,
-  account: IGitAccount | null,
   remote: IRemote,
   localBranch: string,
   remoteBranch: string | null,
@@ -61,10 +54,7 @@ export async function push(
   },
   progressCallback?: (progress: IPushProgress) => void
 ): Promise<void> {
-  const networkArguments = await gitNetworkArguments(repository, account)
-
   const args = [
-    ...networkArguments,
     'push',
     remote.name,
     remoteBranch ? `${localBranch}:${remoteBranch}` : localBranch,
@@ -79,11 +69,8 @@ export async function push(
     args.push('--force-with-lease')
   }
 
-  const expectedErrors = new Set<DugiteError>(AuthenticationErrors)
-  expectedErrors.add(DugiteError.ProtectedBranchForcePush)
-
-  let opts: IGitExecutionOptions = {
-    expectedErrors,
+  let opts: IGitStringExecutionOptions = {
+    env: await envForRemoteOperation(remote.url),
   }
 
   if (progressCallback) {
@@ -120,18 +107,5 @@ export async function push(
     })
   }
 
-  const result = await withTrampolineEnvForRemoteOperation(
-    account,
-    remote.url,
-    env => {
-      return git(args, repository.path, 'push', {
-        ...opts,
-        env: merge(opts.env, env),
-      })
-    }
-  )
-
-  if (result.gitErrorDescription) {
-    throw new GitError(result, args)
-  }
+  await git(args, repository.path, 'push', opts)
 }

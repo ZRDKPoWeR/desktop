@@ -10,73 +10,103 @@ import { IRemote } from './remote'
 import { RetryAction } from './retry-actions'
 import { WorkingDirectoryFileChange } from './status'
 import { PreferencesTab } from './preferences'
-import { CommitOneLine, ICommitContext } from './commit'
+import { Commit, CommitOneLine, ICommitContext } from './commit'
 import { IStashEntry } from './stash-entry'
 import { Account } from '../models/account'
 import { Progress } from './progress'
-import { ITextDiff, DiffSelection } from './diff'
+import { ITextDiff, DiffSelection, ImageDiffType } from './diff'
 import { RepositorySettingsTab } from '../ui/repository-settings/repository-settings'
 import { ICommitMessage } from './commit-message'
-import { IAuthor } from './author'
+import { Author, UnknownAuthor } from './author'
+import { IRefCheck } from '../lib/ci-checks/ci-checks'
+import { GitHubRepository } from './github-repository'
+import { ValidNotificationPullRequestReview } from '../lib/valid-notification-pull-request-review'
+import { UnreachableCommitsTab } from '../ui/history/unreachable-commits-dialog'
+import { IAPIComment } from '../lib/api'
 
 export enum PopupType {
-  RenameBranch = 1,
-  DeleteBranch,
-  DeleteRemoteBranch,
-  ConfirmDiscardChanges,
-  Preferences,
-  MergeBranch,
-  RepositorySettings,
-  AddRepository,
-  CreateRepository,
-  CloneRepository,
-  CreateBranch,
-  SignIn,
-  About,
-  InstallGit,
-  PublishRepository,
-  Acknowledgements,
-  UntrustedCertificate,
-  RemoveRepository,
-  TermsAndConditions,
-  PushBranchCommits,
-  CLIInstalled,
-  GenericGitAuthentication,
-  ExternalEditorFailed,
-  OpenShellFailed,
-  InitializeLFS,
-  LFSAttributeMismatch,
-  UpstreamAlreadyExists,
-  ReleaseNotes,
-  DeletePullRequest,
-  MergeConflicts,
-  AbortMerge,
-  OversizedFiles,
-  CommitConflictsWarning,
-  PushNeedsPull,
-  RebaseFlow,
-  ConfirmForcePush,
-  StashAndSwitchBranch,
-  ConfirmOverwriteStash,
-  ConfirmDiscardStash,
-  CreateTutorialRepository,
-  ConfirmExitTutorial,
-  PushRejectedDueToMissingWorkflowScope,
-  SAMLReauthRequired,
-  CreateFork,
-  CreateTag,
-  DeleteTag,
-  LocalChangesOverwritten,
-  ChooseForkSettings,
-  ConfirmDiscardSelection,
-  CherryPick,
-  MoveToApplicationsFolder,
-  ChangeRepositoryAlias,
-  ThankYou,
-  CommitMessage,
+  RenameBranch = 'RenameBranch',
+  DeleteBranch = 'DeleteBranch',
+  DeleteRemoteBranch = 'DeleteRemoteBranch',
+  ConfirmDiscardChanges = 'ConfirmDiscardChanges',
+  Preferences = 'Preferences',
+  RepositorySettings = 'RepositorySettings',
+  AddRepository = 'AddRepository',
+  CreateRepository = 'CreateRepository',
+  CloneRepository = 'CloneRepository',
+  CreateBranch = 'CreateBranch',
+  SignIn = 'SignIn',
+  About = 'About',
+  InstallGit = 'InstallGit',
+  PublishRepository = 'PublishRepository',
+  Acknowledgements = 'Acknowledgements',
+  UntrustedCertificate = 'UntrustedCertificate',
+  RemoveRepository = 'RemoveRepository',
+  TermsAndConditions = 'TermsAndConditions',
+  PushBranchCommits = 'PushBranchCommits',
+  CLIInstalled = 'CLIInstalled',
+  GenericGitAuthentication = 'GenericGitAuthentication',
+  ExternalEditorFailed = 'ExternalEditorFailed',
+  OpenShellFailed = 'OpenShellFailed',
+  InitializeLFS = 'InitializeLFS',
+  LFSAttributeMismatch = 'LFSAttributeMismatch',
+  UpstreamAlreadyExists = 'UpstreamAlreadyExists',
+  ReleaseNotes = 'ReleaseNotes',
+  DeletePullRequest = 'DeletePullRequest',
+  OversizedFiles = 'OversizedFiles',
+  CommitConflictsWarning = 'CommitConflictsWarning',
+  PushNeedsPull = 'PushNeedsPull',
+  ConfirmForcePush = 'ConfirmForcePush',
+  StashAndSwitchBranch = 'StashAndSwitchBranch',
+  ConfirmOverwriteStash = 'ConfirmOverwriteStash',
+  ConfirmDiscardStash = 'ConfirmDiscardStash',
+  ConfirmCheckoutCommit = 'ConfirmCheckoutCommit',
+  CreateTutorialRepository = 'CreateTutorialRepository',
+  ConfirmExitTutorial = 'ConfirmExitTutorial',
+  PushRejectedDueToMissingWorkflowScope = 'PushRejectedDueToMissingWorkflowScope',
+  SAMLReauthRequired = 'SAMLReauthRequired',
+  CreateFork = 'CreateFork',
+  CreateTag = 'CreateTag',
+  DeleteTag = 'DeleteTag',
+  LocalChangesOverwritten = 'LocalChangesOverwritten',
+  ChooseForkSettings = 'ChooseForkSettings',
+  ConfirmDiscardSelection = 'ConfirmDiscardSelection',
+  MoveToApplicationsFolder = 'MoveToApplicationsFolder',
+  ChangeRepositoryAlias = 'ChangeRepositoryAlias',
+  ThankYou = 'ThankYou',
+  CommitMessage = 'CommitMessage',
+  MultiCommitOperation = 'MultiCommitOperation',
+  WarnLocalChangesBeforeUndo = 'WarnLocalChangesBeforeUndo',
+  WarningBeforeReset = 'WarningBeforeReset',
+  InvalidatedToken = 'InvalidatedToken',
+  AddSSHHost = 'AddSSHHost',
+  SSHKeyPassphrase = 'SSHKeyPassphrase',
+  SSHUserPassword = 'SSHUserPassword',
+  PullRequestChecksFailed = 'PullRequestChecksFailed',
+  CICheckRunRerun = 'CICheckRunRerun',
+  WarnForcePush = 'WarnForcePush',
+  DiscardChangesRetry = 'DiscardChangesRetry',
+  PullRequestReview = 'PullRequestReview',
+  UnreachableCommits = 'UnreachableCommits',
+  StartPullRequest = 'StartPullRequest',
+  Error = 'Error',
+  InstallingUpdate = 'InstallingUpdate',
+  TestNotifications = 'TestNotifications',
+  PullRequestComment = 'PullRequestComment',
+  UnknownAuthors = 'UnknownAuthors',
+  TestIcons = 'TestIcons',
+  ConfirmCommitFilteredChanges = 'ConfirmCommitFilteredChanges',
+  TestAbout = 'TestAbout',
 }
 
-export type Popup =
+interface IBasePopup {
+  /**
+   * Unique id of the popup that it receives upon adding to the stack.
+   */
+  readonly id?: string
+}
+
+export type PopupDetail =
   | { type: PopupType.RenameBranch; repository: Repository; branch: Branch }
   | {
       type: PopupType.DeleteBranch
@@ -105,11 +135,6 @@ export type Popup =
     }
   | { type: PopupType.Preferences; initialSelectedTab?: PreferencesTab }
   | {
-      type: PopupType.MergeBranch
-      repository: Repository
-      branch?: Branch
-    }
-  | {
       type: PopupType.RepositorySettings
       repository: Repository
       initialSelectedTab?: RepositorySettingsTab
@@ -126,7 +151,11 @@ export type Popup =
       initialName?: string
       targetCommit?: CommitOneLine
     }
-  | { type: PopupType.SignIn }
+  | {
+      type: PopupType.SignIn
+      isCredentialHelperSignIn?: boolean
+      credentialHelperUrl?: string
+    }
   | { type: PopupType.About }
   | { type: PopupType.InstallGit; path: string }
   | { type: PopupType.PublishRepository; repository: Repository }
@@ -147,8 +176,10 @@ export type Popup =
   | { type: PopupType.CLIInstalled }
   | {
       type: PopupType.GenericGitAuthentication
-      hostname: string
-      retryAction: RetryAction
+      remoteUrl: string
+      username?: string
+      onSubmit: (username: string, password: string) => void
+      onDismiss: () => void
     }
   | {
       type: PopupType.ExternalEditorFailed
@@ -166,25 +197,13 @@ export type Popup =
     }
   | {
       type: PopupType.ReleaseNotes
-      newRelease: ReleaseSummary
+      newReleases: ReadonlyArray<ReleaseSummary>
     }
   | {
       type: PopupType.DeletePullRequest
       repository: Repository
       branch: Branch
       pullRequest: PullRequest
-    }
-  | {
-      type: PopupType.MergeConflicts
-      repository: Repository
-      ourBranch: string
-      theirBranch?: string
-    }
-  | {
-      type: PopupType.AbortMerge
-      repository: Repository
-      ourBranch: string
-      theirBranch?: string
     }
   | {
       type: PopupType.OversizedFiles
@@ -211,10 +230,6 @@ export type Popup =
       upstreamBranch: string
     }
   | {
-      type: PopupType.RebaseFlow
-      repository: Repository
-    }
-  | {
       type: PopupType.StashAndSwitchBranch
       repository: Repository
       branchToCheckout: Branch
@@ -230,6 +245,11 @@ export type Popup =
       stash: IStashEntry
     }
   | {
+      type: PopupType.ConfirmCheckoutCommit
+      repository: Repository
+      commit: CommitOneLine
+    }
+  | {
       type: PopupType.CreateTutorialRepository
       account: Account
       progress?: Progress
@@ -240,7 +260,7 @@ export type Popup =
   | {
       type: PopupType.PushRejectedDueToMissingWorkflowScope
       rejectedPath: string
-      repository: Repository
+      repository: RepositoryWithGitHubRepository
     }
   | {
       type: PopupType.SAMLReauthRequired
@@ -275,12 +295,6 @@ export type Popup =
       retryAction: RetryAction
       files: ReadonlyArray<string>
     }
-  | {
-      type: PopupType.CherryPick
-      repository: Repository
-      commits: ReadonlyArray<CommitOneLine>
-      sourceBranch: Branch | null
-    }
   | { type: PopupType.MoveToApplicationsFolder }
   | { type: PopupType.ChangeRepositoryAlias; repository: Repository }
   | {
@@ -291,7 +305,7 @@ export type Popup =
     }
   | {
       type: PopupType.CommitMessage
-      coAuthors: ReadonlyArray<IAuthor>
+      coAuthors: ReadonlyArray<Author>
       showCoAuthoredBy: boolean
       commitMessage: ICommitMessage | null
       dialogTitle: string
@@ -300,3 +314,124 @@ export type Popup =
       repository: Repository
       onSubmitCommitMessage: (context: ICommitContext) => Promise<boolean>
     }
+  | {
+      type: PopupType.MultiCommitOperation
+      repository: Repository
+    }
+  | {
+      type: PopupType.WarnLocalChangesBeforeUndo
+      repository: Repository
+      commit: Commit
+      isWorkingDirectoryClean: boolean
+    }
+  | {
+      type: PopupType.WarningBeforeReset
+      repository: Repository
+      commit: Commit
+    }
+  | {
+      type: PopupType.InvalidatedToken
+      account: Account
+    }
+  | {
+      type: PopupType.AddSSHHost
+      host: string
+      ip: string
+      keyType: string
+      fingerprint: string
+      onSubmit: (addHost: boolean) => void
+    }
+  | {
+      type: PopupType.SSHKeyPassphrase
+      keyPath: string
+      onSubmit: (
+        passphrase: string | undefined,
+        storePassphrase: boolean
+      ) => void
+    }
+  | {
+      type: PopupType.SSHUserPassword
+      username: string
+      onSubmit: (password: string | undefined, storePassword: boolean) => void
+    }
+  | {
+      type: PopupType.PullRequestChecksFailed
+      repository: RepositoryWithGitHubRepository
+      pullRequest: PullRequest
+      shouldChangeRepository: boolean
+      checks: ReadonlyArray<IRefCheck>
+    }
+  | {
+      type: PopupType.CICheckRunRerun
+      checkRuns: ReadonlyArray<IRefCheck>
+      repository: GitHubRepository
+      prRef: string
+      failedOnly: boolean
+    }
+  | { type: PopupType.WarnForcePush; operation: string; onBegin: () => void }
+  | {
+      type: PopupType.DiscardChangesRetry
+      retryAction: RetryAction
+    }
+  | {
+      type: PopupType.PullRequestReview
+      repository: RepositoryWithGitHubRepository
+      pullRequest: PullRequest
+      review: ValidNotificationPullRequestReview
+      shouldCheckoutBranch: boolean
+      shouldChangeRepository: boolean
+    }
+  | {
+      type: PopupType.UnreachableCommits
+      selectedTab: UnreachableCommitsTab
+    }
+  | {
+      type: PopupType.StartPullRequest
+      prBaseBranches: ReadonlyArray<Branch>
+      currentBranch: Branch
+      defaultBranch: Branch | null
+      externalEditorLabel?: string
+      imageDiffType: ImageDiffType
+      prRecentBaseBranches: ReadonlyArray<Branch>
+      repository: Repository
+      nonLocalCommitSHA: string | null
+      showSideBySideDiff: boolean
+      currentBranchHasPullRequest: boolean
+    }
+  | {
+      type: PopupType.Error
+      error: Error
+    }
+  | {
+      type: PopupType.InstallingUpdate
+    }
+  | {
+      type: PopupType.TestNotifications
+      repository: RepositoryWithGitHubRepository
+    }
+  | {
+      type: PopupType.PullRequestComment
+      repository: RepositoryWithGitHubRepository
+      pullRequest: PullRequest
+      comment: IAPIComment
+      shouldCheckoutBranch: boolean
+      shouldChangeRepository: boolean
+    }
+  | {
+      type: PopupType.UnknownAuthors
+      authors: ReadonlyArray<UnknownAuthor>
+      onCommit: () => void
+    }
+  | {
+      type: PopupType.TestIcons
+    }
+  | {
+      type: PopupType.ConfirmCommitFilteredChanges
+      onCommitAnyway: () => void
+      showFilesToBeCommitted: () => void
+    }
+  | {
+      type: PopupType.TestAbout
+    }
+
+export type Popup = IBasePopup & PopupDetail

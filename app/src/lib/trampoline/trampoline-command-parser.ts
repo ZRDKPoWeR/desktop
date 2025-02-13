@@ -1,4 +1,6 @@
 import { parseEnumValue } from '../enum'
+import { assertNever } from '../fatal-error'
+import { sendNonFatalException } from '../helpers/non-fatal-exception'
 import {
   ITrampolineCommand,
   TrampolineCommandIdentifier,
@@ -9,6 +11,7 @@ enum TrampolineCommandParserState {
   Parameters,
   EnvironmentVariablesCount,
   EnvironmentVariables,
+  Stdin,
   Finished,
 }
 
@@ -21,6 +24,7 @@ export class TrampolineCommandParser {
   private readonly parameters: string[] = []
   private environmentVariablesCount: number = 0
   private readonly environmentVariables = new Map<string, string>()
+  private stdin = ''
 
   private state: TrampolineCommandParserState =
     TrampolineCommandParserState.ParameterCount
@@ -62,7 +66,7 @@ export class TrampolineCommandParser {
         if (this.environmentVariablesCount > 0) {
           this.state = TrampolineCommandParserState.EnvironmentVariables
         } else {
-          this.state = TrampolineCommandParserState.Finished
+          this.state = TrampolineCommandParserState.Stdin
         }
 
         break
@@ -85,26 +89,33 @@ export class TrampolineCommandParser {
         this.environmentVariables.set(variableKey, variableValue)
 
         if (this.environmentVariables.size === this.environmentVariablesCount) {
-          this.state = TrampolineCommandParserState.Finished
+          this.state = TrampolineCommandParserState.Stdin
         }
         break
-
+      case TrampolineCommandParserState.Stdin:
+        this.stdin = value
+        this.state = TrampolineCommandParserState.Finished
+        break
+      case TrampolineCommandParserState.Finished:
+        throw new Error(`Received value when in Finished`)
       default:
-        throw new Error(`Received value during invalid state: ${this.state}`)
+        assertNever(this.state, `Invalid state: ${this.state}`)
     }
   }
 
   /**
    * Returns a command.
    *
-   * Throws an error if the parser hasn't finished yet, or if the identifier
+   * It will return null if the parser hasn't finished yet, or if the identifier
    * is missing or invalid.
    **/
-  public toCommand(): ITrampolineCommand {
+  public toCommand(): ITrampolineCommand | null {
     if (this.hasFinished() === false) {
-      throw new Error(
+      const error = new Error(
         'The command cannot be generated if parsing is not finished'
       )
+      this.logCommandCreationError(error)
+      return null
     }
 
     const identifierString = this.environmentVariables.get(
@@ -112,7 +123,13 @@ export class TrampolineCommandParser {
     )
 
     if (identifierString === undefined) {
-      throw new Error('The command identifier is missing')
+      const error = new Error(
+        `The command identifier is missing. Env variables received: ${Array.from(
+          this.environmentVariables.keys()
+        )}`
+      )
+      this.logCommandCreationError(error)
+      return null
     }
 
     const identifier = parseEnumValue(
@@ -121,15 +138,34 @@ export class TrampolineCommandParser {
     )
 
     if (identifier === undefined) {
-      throw new Error(
+      const error = new Error(
         `The command identifier ${identifierString} is not supported`
       )
+      this.logCommandCreationError(error)
+      return null
+    }
+
+    const trampolineToken = this.environmentVariables.get(
+      'DESKTOP_TRAMPOLINE_TOKEN'
+    )
+
+    if (trampolineToken === undefined) {
+      const error = new Error(`The trampoline token is missing`)
+      this.logCommandCreationError(error)
+      return null
     }
 
     return {
       identifier,
+      trampolineToken,
       parameters: this.parameters,
       environmentVariables: this.environmentVariables,
+      stdin: this.stdin,
     }
+  }
+
+  private logCommandCreationError(error: Error) {
+    log.error('Error creating trampoline command:', error)
+    sendNonFatalException('trampolineCommandParser', error)
   }
 }
