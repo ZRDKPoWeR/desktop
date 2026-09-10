@@ -1,4 +1,6 @@
-import * as FSE from 'fs-extra'
+import { describe, it } from 'node:test'
+import assert from 'node:assert'
+import { writeFile } from 'fs/promises'
 import * as Path from 'path'
 import {
   continueRebase,
@@ -8,25 +10,20 @@ import {
   getRebaseInternalState,
   RebaseResult,
 } from '../../../src/lib/git'
-import { CommitOneLine } from '../../../src/models/commit'
+import { Commit } from '../../../src/models/commit'
 import { Repository } from '../../../src/models/repository'
 import { setupEmptyRepositoryDefaultMain } from '../../helpers/repositories'
 import { makeCommit } from '../../helpers/repository-scaffolding'
 import { squash } from '../../../src/lib/git/squash'
-import { GitProcess } from 'dugite'
+import { exec } from 'dugite'
 import { getStatusOrThrow } from '../../helpers/status'
 import { getTempFilePath } from '../../../src/lib/file-system'
 
 describe('git/cherry-pick', () => {
-  let repository: Repository
-  let initialCommit: CommitOneLine
+  it('squashes one commit onto the next (non-conflicting)', async t => {
+    const repository = await setupEmptyRepositoryDefaultMain(t)
+    const initialCommit = await makeSquashCommit(repository, 'initialize')
 
-  beforeEach(async () => {
-    repository = await setupEmptyRepositoryDefaultMain()
-    initialCommit = await makeSquashCommit(repository, 'initialize')
-  })
-
-  it('squashes one commit onto the next (non-conflicting)', async () => {
     const firstCommit = await makeSquashCommit(repository, 'first')
     const secondCommit = await makeSquashCommit(repository, 'second')
 
@@ -38,22 +35,30 @@ describe('git/cherry-pick', () => {
       'Test Summary\n\nTest Body'
     )
 
-    expect(result).toBe(RebaseResult.CompletedWithoutError)
+    assert.equal(result, RebaseResult.CompletedWithoutError)
 
     const log = await getCommits(repository, 'HEAD', 5)
     const squashed = log[0]
-    expect(squashed.summary).toBe('Test Summary')
-    expect(squashed.body).toBe('Test Body\n')
-    expect(log.length).toBe(2)
+    assert.equal(squashed.summary, 'Test Summary')
+    assert.equal(squashed.body, 'Test Body\n')
+    assert.equal(log.length, 2)
 
     // verify squashed commit contains changes from squashed commits
-    const squashedFiles = await getChangedFiles(repository, squashed.sha)
-    const squashedFilePaths = squashedFiles.map(f => f.path).join(' ')
-    expect(squashedFilePaths).toContain('first.md')
-    expect(squashedFilePaths).toContain('second.md')
+    const squashedChangesetData = await getChangedFiles(
+      repository,
+      squashed.sha
+    )
+    const squashedFilePaths = squashedChangesetData.files
+      .map(f => f.path)
+      .join(' ')
+    assert(squashedFilePaths.includes('first.md'))
+    assert(squashedFilePaths.includes('second.md'))
   })
 
-  it('returns error when squashOnto is in the toSquash array', async () => {
+  it('returns error when squashOnto is in the toSquash array', async t => {
+    const repository = await setupEmptyRepositoryDefaultMain(t)
+    const initialCommit = await makeSquashCommit(repository, 'initialize')
+
     const firstCommit = await makeSquashCommit(repository, 'first')
     const secondCommit = await makeSquashCommit(repository, 'second')
 
@@ -65,10 +70,13 @@ describe('git/cherry-pick', () => {
       'Test Summary\n\nTest Body'
     )
 
-    expect(result).toBe(RebaseResult.Error)
+    assert.equal(result, RebaseResult.Error)
   })
 
-  it('squashes multiple commit onto one (non-conflicting)', async () => {
+  it('squashes multiple commit onto one (non-conflicting)', async t => {
+    const repository = await setupEmptyRepositoryDefaultMain(t)
+    const initialCommit = await makeSquashCommit(repository, 'initialize')
+
     const firstCommit = await makeSquashCommit(repository, 'first')
     const secondCommit = await makeSquashCommit(repository, 'second')
     const thirdCommit = await makeSquashCommit(repository, 'third')
@@ -82,29 +90,37 @@ describe('git/cherry-pick', () => {
       'Test Summary\n\nTest Body'
     )
 
-    expect(result).toBe(RebaseResult.CompletedWithoutError)
+    assert.equal(result, RebaseResult.CompletedWithoutError)
 
     const log = await getCommits(repository, 'HEAD', 5)
     const squashed = log[0]
-    expect(squashed.summary).toBe('Test Summary')
-    expect(squashed.body).toBe('Test Body\n')
-    expect(log.length).toBe(2)
+    assert.equal(squashed.summary, 'Test Summary')
+    assert.equal(squashed.body, 'Test Body\n')
+    assert.equal(log.length, 2)
 
     // verify squashed commit contains changes from squashed commits
-    const squashedFiles = await getChangedFiles(repository, squashed.sha)
-    const squashedFilePaths = squashedFiles.map(f => f.path).join(' ')
-    expect(squashedFilePaths).toContain('first.md')
-    expect(squashedFilePaths).toContain('second.md')
-    expect(squashedFilePaths).toContain('third.md')
-    expect(squashedFilePaths).toContain('fourth.md')
+    const squashedChangesetData = await getChangedFiles(
+      repository,
+      squashed.sha
+    )
+    const squashedFilePaths = squashedChangesetData.files
+      .map(f => f.path)
+      .join(' ')
+    assert(squashedFilePaths.includes('first.md'))
+    assert(squashedFilePaths.includes('second.md'))
+    assert(squashedFilePaths.includes('third.md'))
+    assert(squashedFilePaths.includes('fourth.md'))
   })
 
-  it('squashes using the root of the branch if last retained commit is null', async () => {
+  it('squashes using the root of the branch if last retained commit is null', async t => {
+    const repository = await setupEmptyRepositoryDefaultMain(t)
+    const initialCommit = await makeSquashCommit(repository, 'initialize')
+
     const firstCommit = await makeSquashCommit(repository, 'first')
     const secondCommit = await makeSquashCommit(repository, 'second')
 
     let log = await getCommits(repository, 'HEAD', 5)
-    expect(log.length).toBe(3)
+    assert.equal(log.length, 3)
 
     const result = await squash(
       repository,
@@ -114,23 +130,31 @@ describe('git/cherry-pick', () => {
       'Test Summary\n\nTest Body'
     )
 
-    expect(result).toBe(RebaseResult.CompletedWithoutError)
+    assert.equal(result, RebaseResult.CompletedWithoutError)
 
     log = await getCommits(repository, 'HEAD', 5)
     const squashed = log[0]
-    expect(squashed.summary).toBe('Test Summary')
-    expect(squashed.body).toBe('Test Body\n')
-    expect(log.length).toBe(1)
+    assert.equal(squashed.summary, 'Test Summary')
+    assert.equal(squashed.body, 'Test Body\n')
+    assert.equal(log.length, 1)
 
     // verify squashed commit contains changes from squashed commits
-    const squashedFiles = await getChangedFiles(repository, squashed.sha)
-    const squashedFilePaths = squashedFiles.map(f => f.path).join(' ')
-    expect(squashedFilePaths).toContain('initialize')
-    expect(squashedFilePaths).toContain('first.md')
-    expect(squashedFilePaths).toContain('second.md')
+    const squashedChangesetData = await getChangedFiles(
+      repository,
+      squashed.sha
+    )
+    const squashedFilePaths = squashedChangesetData.files
+      .map(f => f.path)
+      .join(' ')
+    assert(squashedFilePaths.includes('initialize'))
+    assert(squashedFilePaths.includes('first.md'))
+    assert(squashedFilePaths.includes('second.md'))
   })
 
-  it('squashes multiple commit non-sequential commits (reorders, non-conflicting)', async () => {
+  it('squashes multiple commit non-sequential commits (reorders, non-conflicting)', async t => {
+    const repository = await setupEmptyRepositoryDefaultMain(t)
+    const initialCommit = await makeSquashCommit(repository, 'initialize')
+
     const firstCommit = await makeSquashCommit(repository, 'first')
     await makeSquashCommit(repository, 'second')
     const thirdCommit = await makeSquashCommit(repository, 'third')
@@ -155,7 +179,7 @@ describe('git/cherry-pick', () => {
       ''
     )
 
-    expect(result).toBe(RebaseResult.CompletedWithoutError)
+    assert.equal(result, RebaseResult.CompletedWithoutError)
 
     // From oldest to newest, log should look like:
     // - initial commit - log[2]
@@ -163,22 +187,30 @@ describe('git/cherry-pick', () => {
     // - 'fourth' commit - log[0]
     const log = await getCommits(repository, 'HEAD', 5)
     const squashed = log[1]
-    expect(squashed.summary).toBe('first')
-    expect(squashed.body).toBe('third\n\nfifth\n')
-    expect(log[0].summary).toBe('fourth')
-    expect(log.length).toBe(4)
+    assert.equal(squashed.summary, 'first')
+    assert.equal(squashed.body, 'third\n\nfifth\n')
+    assert.equal(log[0].summary, 'fourth')
+    assert.equal(log.length, 4)
 
     // verify squashed commit contains changes from squashed commits
-    const squashedFiles = await getChangedFiles(repository, squashed.sha)
-    const squashedFilePaths = squashedFiles.map(f => f.path).join(' ')
-    expect(squashedFilePaths).toContain('first.md')
-    expect(squashedFilePaths).toContain('third.md')
-    expect(squashedFilePaths).toContain('fifth.md')
-    expect(squashedFilePaths).not.toContain('second.md')
-    expect(squashedFilePaths).not.toContain('fourth.md')
+    const squashedChangesetData = await getChangedFiles(
+      repository,
+      squashed.sha
+    )
+    const squashedFilePaths = squashedChangesetData.files
+      .map(f => f.path)
+      .join(' ')
+    assert(squashedFilePaths.includes('first.md'))
+    assert(squashedFilePaths.includes('third.md'))
+    assert(squashedFilePaths.includes('fifth.md'))
+    assert(!squashedFilePaths.includes('second.md'))
+    assert(!squashedFilePaths.includes('fourth.md'))
   })
 
-  it('handles squashing a conflicting commit', async () => {
+  it('handles squashing a conflicting commit', async t => {
+    const repository = await setupEmptyRepositoryDefaultMain(t)
+    const initialCommit = await makeSquashCommit(repository, 'initialize')
+
     const firstCommit = await makeSquashCommit(repository, 'first')
 
     // make a commit with a commit message 'second' and adding file 'second.md'
@@ -198,13 +230,13 @@ describe('git/cherry-pick', () => {
       'Test Summary\n\nTest Body'
     )
 
-    expect(result).toBe(RebaseResult.ConflictsEncountered)
+    assert.equal(result, RebaseResult.ConflictsEncountered)
 
     let status = await getStatusOrThrow(repository)
     let { files } = status.workingDirectory
 
     // resolve conflicts by adding the conflicting file
-    await GitProcess.exec(
+    await exec(
       ['add', Path.join(repository.path, 'second.md')],
       repository.path
     )
@@ -212,58 +244,58 @@ describe('git/cherry-pick', () => {
     // If there are conflicts, we need to resend in git editor for changing the
     // git message on continue
     const messagePath = await getTempFilePath('squashCommitMessage')
-    await FSE.writeFile(messagePath, 'Test Summary\n\nTest Body')
+    await writeFile(messagePath, 'Test Summary\n\nTest Body')
 
     // continue rebase
-    let continueResult = await continueRebase(
-      repository,
-      files,
-      undefined,
-      undefined,
-      `cat "${messagePath}" >`
-    )
+    let continueResult = await continueRebase(repository, files, undefined, {
+      gitEditor: `cat "${messagePath}" >`,
+    })
 
     // This will now conflict with the 'second' commit since it is going to now
     // apply the second commit which now modifies the same lines in the
     // 'second.md' that the squashed first commit does.
-    expect(continueResult).toBe(RebaseResult.ConflictsEncountered)
+    assert.equal(continueResult, RebaseResult.ConflictsEncountered)
 
     status = await getStatusOrThrow(repository)
     files = status.workingDirectory.files
 
-    await FSE.writeFile(
+    await writeFile(
       Path.join(repository.path, 'second.md'),
       '# resolve conflict from adding add after resolving squash'
     )
 
-    continueResult = await continueRebase(
-      repository,
-      files,
-      undefined,
-      undefined,
+    continueResult = await continueRebase(repository, files, undefined, {
       // Only reason I did this here is to show it does not cause harm.
       // In case of multiple commits being squashed/reordered before the squash
       // completes, we may not be able to tell which conflict the squash
       // message will need to go after so we will be sending it on all
       // continues.
-      `cat "${messagePath}" >`
-    )
-    expect(continueResult).toBe(RebaseResult.CompletedWithoutError)
+      gitEditor: `cat "${messagePath}" >`,
+    })
+    assert.equal(continueResult, RebaseResult.CompletedWithoutError)
 
     const log = await getCommits(repository, 'HEAD', 5)
-    expect(log.length).toBe(3)
+    assert.equal(log.length, 3)
     const squashed = log[1]
-    expect(squashed.summary).toBe('Test Summary')
-    expect(squashed.body).toBe('Test Body\n')
+    assert.equal(squashed.summary, 'Test Summary')
+    assert.equal(squashed.body, 'Test Body\n')
 
     // verify squashed commit contains changes from squashed commits
-    const squashedFiles = await getChangedFiles(repository, squashed.sha)
-    const squashedFilePaths = squashedFiles.map(f => f.path).join(' ')
-    expect(squashedFilePaths).toContain('first.md')
-    expect(squashedFilePaths).toContain('second.md')
+    const squashedChangesetData = await getChangedFiles(
+      repository,
+      squashed.sha
+    )
+    const squashedFilePaths = squashedChangesetData.files
+      .map(f => f.path)
+      .join(' ')
+    assert(squashedFilePaths.includes('first.md'))
+    assert(squashedFilePaths.includes('second.md'))
   })
 
-  it('squashes with default merged commit message/description if commit message not provided', async () => {
+  it('squashes with default merged commit message/description if commit message not provided', async t => {
+    const repository = await setupEmptyRepositoryDefaultMain(t)
+    const initialCommit = await makeSquashCommit(repository, 'initialize')
+
     const firstCommit = await makeSquashCommit(repository, 'first')
     const secondCommit = await makeSquashCommit(repository, 'second')
 
@@ -274,16 +306,19 @@ describe('git/cherry-pick', () => {
       initialCommit.sha,
       ''
     )
-    expect(result).toBe(RebaseResult.CompletedWithoutError)
+    assert.equal(result, RebaseResult.CompletedWithoutError)
 
     const log = await getCommits(repository, 'HEAD', 5)
     const squashed = log[0]
-    expect(squashed.summary).toBe('first')
-    expect(squashed.body).toBe('second\n')
-    expect(log.length).toBe(2)
+    assert.equal(squashed.summary, 'first')
+    assert.equal(squashed.body, 'second\n')
+    assert.equal(log.length, 2)
   })
 
-  it('returns error on invalid lastRetainedCommitRef', async () => {
+  it('returns error on invalid lastRetainedCommitRef', async t => {
+    const repository = await setupEmptyRepositoryDefaultMain(t)
+    await makeSquashCommit(repository, 'initialize')
+
     const firstCommit = await makeSquashCommit(repository, 'first')
     const secondCommit = await makeSquashCommit(repository, 'second')
 
@@ -295,36 +330,41 @@ describe('git/cherry-pick', () => {
       'Test Summary\n\nTest Body'
     )
 
-    expect(result).toBe(RebaseResult.Error)
+    assert.equal(result, RebaseResult.Error)
 
     // Rebase will not start - As it won't be able retrieve a commits to build a
     // todo and then interactive rebase would fail for bad revision. Added logic
     // to short circuit to prevent unnecessary attempt at an interactive rebase.
-    const isRebaseStillOngoing = await getRebaseInternalState(repository)
-    expect(isRebaseStillOngoing !== null).toBeFalse()
+    assert.equal(await getRebaseInternalState(repository), null)
   })
 
-  it('returns error on invalid commit to squashOnto', async () => {
+  it('returns error on invalid commit to squashOnto', async t => {
+    const repository = await setupEmptyRepositoryDefaultMain(t)
+    const initialCommit = await makeSquashCommit(repository, 'initialize')
+
     await makeSquashCommit(repository, 'first')
     const secondCommit = await makeSquashCommit(repository, 'second')
 
+    const badCommit = { ...secondCommit, sha: 'INVALID', summary: 'INVALID' }
     const result = await squash(
       repository,
       [secondCommit],
-      { sha: 'INVALID', summary: 'INVALID' },
+      badCommit,
       initialCommit.sha,
       'Test Summary\n\nTest Body'
     )
 
-    expect(result).toBe(RebaseResult.Error)
+    assert.equal(result, RebaseResult.Error)
 
     // Rebase should not start - if we did attempt this, it could result in
     // dropping commits.
-    const isRebaseStillOngoing = await getRebaseInternalState(repository)
-    expect(isRebaseStillOngoing !== null).toBeFalse()
+    assert.equal(await getRebaseInternalState(repository), null)
   })
 
-  it('returns error on empty toSquash', async () => {
+  it('returns error on empty toSquash', async t => {
+    const repository = await setupEmptyRepositoryDefaultMain(t)
+    const initialCommit = await makeSquashCommit(repository, 'initialize')
+
     const first = await makeSquashCommit(repository, 'first')
     await makeSquashCommit(repository, 'second')
 
@@ -336,13 +376,12 @@ describe('git/cherry-pick', () => {
       'Test Summary\n\nTest Body'
     )
 
-    expect(result).toBe(RebaseResult.Error)
+    assert.equal(result, RebaseResult.Error)
 
     // Rebase should not start - technically there would be no harm in this
     // rebase as it would just replay history, but we should not use squash to
     // replay history.
-    const isRebaseStillOngoing = await getRebaseInternalState(repository)
-    expect(isRebaseStillOngoing !== null).toBeFalse()
+    assert.equal(await getRebaseInternalState(repository), null)
   })
 })
 
@@ -350,7 +389,7 @@ async function makeSquashCommit(
   repository: Repository,
   desc: string,
   file?: string
-): Promise<CommitOneLine> {
+): Promise<Commit> {
   file = file || desc
   const commitTree = {
     commitMessage: desc,
@@ -363,5 +402,7 @@ async function makeSquashCommit(
   }
   await makeCommit(repository, commitTree)
 
-  return (await getCommit(repository, 'HEAD'))!
+  const commit = await getCommit(repository, 'HEAD')
+  assert(commit !== null, `Couldn't find HEAD after committing!`)
+  return commit
 }

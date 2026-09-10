@@ -1,13 +1,22 @@
 import * as React from 'react'
 import { Dispatcher } from '../dispatcher'
-import { Repository } from '../../models/repository'
+import {
+  isRepositoryWithGitHubRepository,
+  Repository,
+} from '../../models/repository'
 import { Dialog, DialogContent } from '../dialog'
 import { ICommitContext } from '../../models/commit'
 import { CommitIdentity } from '../../models/commit-identity'
 import { ICommitMessage } from '../../models/commit-message'
 import { IAutocompletionProvider } from '../autocompletion'
-import { IAuthor } from '../../models/author'
+import { Author, UnknownAuthor } from '../../models/author'
 import { CommitMessage } from '../changes/commit-message'
+import noop from 'lodash/noop'
+import { Popup } from '../../models/popup'
+import { CommitOptions, Foldout } from '../../lib/app-state'
+import { Account } from '../../models/account'
+import { RepoRulesInfo } from '../../models/repo-rules'
+import { IAheadBehind } from '../../models/branch'
 
 interface ICommitMessageDialogProps {
   /**
@@ -26,7 +35,7 @@ interface ICommitMessageDialogProps {
    * subsequent commit to add Co-Authored-By commit message trailers depending
    * on whether the user has chosen to do so.
    */
-  readonly coAuthors: ReadonlyArray<IAuthor>
+  readonly coAuthors: ReadonlyArray<Author>
 
   /**
    * The name and email that will be used for the author info when committing
@@ -43,6 +52,8 @@ interface ICommitMessageDialogProps {
    * Whether or not the app should use spell check on commit summary and description
    */
   readonly commitSpellcheckEnabled: boolean
+
+  readonly showCommitLengthWarning: boolean
 
   /** Text for the ok button */
   readonly dialogButtonText: string
@@ -62,6 +73,11 @@ interface ICommitMessageDialogProps {
   /** Whether to warn the user that they are on a protected branch. */
   readonly showBranchProtected: boolean
 
+  /** Repository rules that apply to the branch. */
+  readonly repoRulesInfo: RepoRulesInfo
+
+  readonly aheadBehind: IAheadBehind | null
+
   /**
    * Whether or not to show a field for adding co-authors to a commit
    * (currently only supported for GH/GHE repositories)
@@ -76,12 +92,59 @@ interface ICommitMessageDialogProps {
 
   /** Method to run when dialog is submitted */
   readonly onSubmitCommitMessage: (context: ICommitContext) => Promise<boolean>
+
+  readonly repositoryAccount: Account | null
+  readonly accounts: ReadonlyArray<Account>
+
+  /**
+   * Whether or not to skip blocking commit hooks when creating commits
+   * by means of passing the `--no-verify` flag to git commit
+   */
+  readonly skipCommitHooks: boolean
+
+  /**
+   * Whether or not to add a `Signed-off-by` trailer to commit messages
+   * by means of passing the `--signoff` flag to git commit
+   */
+  readonly signOffCommits: boolean
+
+  /**
+   * Whether or not to allow creating a commit without any file changes
+   * by means of passing the `--allow-empty` flag to git commit.
+   * This option resets to false after each commit.
+   */
+  readonly allowEmptyCommit: boolean
+
+  /**
+   * Whether or not to show the "Allow empty commit" option in the commit
+   * options context menu. Defaults to false since CommitMessageDialog is
+   * currently only used for squash commits where empty commits are not
+   * applicable.
+   */
+  readonly showAllowEmptyCommitOption?: boolean
+
+  /** Callback to set commit options for the given repository */
+  readonly onUpdateCommitOptions: (
+    repository: Repository,
+    options: Partial<CommitOptions>
+  ) => void
+}
+
+interface ICommitMessageDialogState {
+  readonly showCoAuthoredBy: boolean
+  readonly coAuthors: ReadonlyArray<Author>
 }
 
 export class CommitMessageDialog extends React.Component<
   ICommitMessageDialogProps,
-  {}
+  ICommitMessageDialogState
 > {
+  public constructor(props: ICommitMessageDialogProps) {
+    super(props)
+    const { showCoAuthoredBy, coAuthors } = props
+    this.state = { showCoAuthoredBy, coAuthors }
+  }
+
   public render() {
     return (
       <Dialog
@@ -91,28 +154,94 @@ export class CommitMessageDialog extends React.Component<
       >
         <DialogContent>
           <CommitMessage
+            showInputLabels={true}
             branch={this.props.branch}
+            mostRecentLocalCommit={null}
             commitAuthor={this.props.commitAuthor}
+            isShowingModal={true}
+            isShowingFoldout={false}
             commitButtonText={this.props.dialogButtonText}
+            commitToAmend={null}
             repository={this.props.repository}
-            dispatcher={this.props.dispatcher}
             commitMessage={this.props.commitMessage}
             focusCommitMessage={false}
             autocompletionProviders={this.props.autocompletionProviders}
-            showCoAuthoredBy={this.props.showCoAuthoredBy}
-            coAuthors={this.props.coAuthors}
+            showCoAuthoredBy={this.state.showCoAuthoredBy}
+            coAuthors={this.state.coAuthors}
             placeholder={''}
             prepopulateCommitSummary={this.props.prepopulateCommitSummary}
             key={this.props.repository.id}
             showBranchProtected={this.props.showBranchProtected}
+            repoRulesInfo={this.props.repoRulesInfo}
+            aheadBehind={this.props.aheadBehind}
             showNoWriteAccess={this.props.showNoWriteAccess}
             commitSpellcheckEnabled={this.props.commitSpellcheckEnabled}
-            persistCoAuthors={false}
-            persistCommitMessage={false}
+            showCommitLengthWarning={this.props.showCommitLengthWarning}
+            onCoAuthorsUpdated={this.onCoAuthorsUpdated}
+            onShowCoAuthoredByChanged={this.onShowCoAuthorsChanged}
+            onConfirmCommitWithUnknownCoAuthors={
+              this.onConfirmCommitWithUnknownCoAuthors
+            }
             onCreateCommit={this.props.onSubmitCommitMessage}
+            anyFilesAvailable={true}
+            anyFilesSelected={true}
+            filesSelected={[]}
+            onCommitMessageFocusSet={noop}
+            onRefreshAuthor={this.onRefreshAuthor}
+            onShowPopup={this.onShowPopup}
+            onShowFoldout={this.onShowFoldout}
+            onCommitSpellcheckEnabledChanged={
+              this.onCommitSpellcheckEnabledChanged
+            }
+            repositoryAccount={this.props.repositoryAccount}
+            onStopAmending={this.onStopAmending}
+            onShowCreateForkDialog={this.onShowCreateForkDialog}
+            accounts={this.props.accounts}
+            isCommitting={false}
+            hookProgress={null}
+            onShowCommitProgress={undefined}
+            skipCommitHooks={this.props.skipCommitHooks}
+            signOffCommits={this.props.signOffCommits}
+            allowEmptyCommit={this.props.allowEmptyCommit}
+            showAllowEmptyCommitOption={
+              this.props.showAllowEmptyCommitOption ?? false
+            }
+            onUpdateCommitOptions={this.props.onUpdateCommitOptions}
           />
         </DialogContent>
       </Dialog>
     )
+  }
+
+  private onCoAuthorsUpdated = (coAuthors: ReadonlyArray<Author>) =>
+    this.setState({ coAuthors })
+
+  private onShowCoAuthorsChanged = (showCoAuthoredBy: boolean) =>
+    this.setState({ showCoAuthoredBy })
+
+  private onConfirmCommitWithUnknownCoAuthors = (
+    coAuthors: ReadonlyArray<UnknownAuthor>,
+    onCommitAnyway: () => void
+  ) => {
+    const { dispatcher } = this.props
+    dispatcher.showUnknownAuthorsCommitWarning(coAuthors, onCommitAnyway)
+  }
+
+  private onRefreshAuthor = () =>
+    this.props.dispatcher.refreshAuthor(this.props.repository)
+
+  private onShowPopup = (p: Popup) => this.props.dispatcher.showPopup(p)
+  private onShowFoldout = (f: Foldout) => this.props.dispatcher.showFoldout(f)
+
+  private onCommitSpellcheckEnabledChanged = (enabled: boolean) =>
+    this.props.dispatcher.setCommitSpellcheckEnabled(enabled)
+
+  private onStopAmending = () =>
+    this.props.dispatcher.stopAmendingRepository(this.props.repository)
+
+  private onShowCreateForkDialog = () => {
+    if (isRepositoryWithGitHubRepository(this.props.repository)) {
+      this.props.dispatcher.showCreateForkDialog(this.props.repository)
+    }
   }
 }

@@ -6,7 +6,7 @@ import { Branch, StartPoint } from '../../models/branch'
 import { Row } from '../lib/row'
 import { Ref } from '../lib/ref'
 import { LinkButton } from '../lib/link-button'
-import { Dialog, DialogError, DialogContent, DialogFooter } from '../dialog'
+import { Dialog, DialogContent, DialogFooter } from '../dialog'
 import {
   VerticalSegmentedControl,
   ISegmentedItem,
@@ -25,12 +25,25 @@ import { startTimer } from '../lib/timing'
 import { GitHubRepository } from '../../models/github-repository'
 import { RefNameTextBox } from '../lib/ref-name-text-box'
 import { CommitOneLine } from '../../models/commit'
+import { PopupType } from '../../models/popup'
+import { RepositorySettingsTab } from '../repository-settings/repository-settings'
+import { isRepositoryWithForkedGitHubRepository } from '../../models/repository'
+import { IAPIRepoRuleset } from '../../lib/api'
+import { Account } from '../../models/account'
+import {
+  IBranchRuleError,
+  checkBranchNameRules,
+  renderBranchNameRuleError,
+} from '../lib/branch-name-rule-validation'
 
 interface ICreateBranchProps {
   readonly repository: Repository
   readonly targetCommit?: CommitOneLine
   readonly upstreamGitHubRepository: GitHubRepository | null
+  readonly accounts: ReadonlyArray<Account>
+  readonly cachedRepoRulesets: ReadonlyMap<number, IAPIRepoRuleset>
   readonly dispatcher: Dispatcher
+  readonly onBranchCreatedFromCommit?: () => void
   readonly onDismissed: () => void
   /**
    * If provided, the branch creation is handled by the given method.
@@ -59,7 +72,7 @@ interface ICreateBranchProps {
 }
 
 interface ICreateBranchState {
-  readonly currentError: Error | null
+  readonly currentError: IBranchRuleError | null
   readonly branchName: string
   readonly startPoint: StartPoint
 
@@ -97,6 +110,10 @@ export class CreateBranch extends React.Component<
   ICreateBranchProps,
   ICreateBranchState
 > {
+  private branchRulesDebounceId: number | null = null
+
+  private readonly ERRORS_ID = 'branch-name-errors'
+
   public constructor(props: ICreateBranchProps) {
     super(props)
 
@@ -131,6 +148,16 @@ export class CreateBranch extends React.Component<
         ),
       })
     }
+
+    if (nextProps.initialName.length > 0) {
+      this.checkBranchRules(nextProps.initialName)
+    }
+  }
+
+  public componentWillUnmount() {
+    if (this.branchRulesDebounceId !== null) {
+      window.clearTimeout(this.branchRulesDebounceId)
+    }
   }
 
   private renderBranchSelection() {
@@ -145,7 +172,7 @@ export class CreateBranch extends React.Component<
       return (
         <p>
           Your new branch will be based on the commit '{targetCommit.summary}' (
-          {targetCommit.sha.substr(0, 7)}) from your repository.
+          {targetCommit.sha.substring(0, 7)}) from your repository.
         </p>
       )
     } else if (tip.kind === TipState.Detached) {
@@ -153,7 +180,7 @@ export class CreateBranch extends React.Component<
         <p>
           You do not currently have any branch checked out (your HEAD reference
           is detached). As such your new branch will be based on your currently
-          checked out commit ({tip.currentSha.substr(0, 7)}
+          checked out commit ({tip.currentSha.substring(0, 7)}
           ).
         </p>
       )
@@ -195,9 +222,9 @@ export class CreateBranch extends React.Component<
   public render() {
     const disabled =
       this.state.branchName.length <= 0 ||
-      !!this.state.currentError ||
+      (!!this.state.currentError && !this.state.currentError.isWarning) ||
       /^\s*$/.test(this.state.branchName)
-    const error = this.state.currentError
+    const hasError = !!this.state.currentError
 
     return (
       <Dialog
@@ -208,14 +235,19 @@ export class CreateBranch extends React.Component<
         loading={this.state.isCreatingBranch}
         disabled={this.state.isCreatingBranch}
       >
-        {error ? <DialogError>{error.message}</DialogError> : null}
-
         <DialogContent>
           <RefNameTextBox
             label="Name"
+            ariaDescribedBy={hasError ? this.ERRORS_ID : undefined}
             initialValue={this.props.initialName}
             onValueChange={this.onBranchNameChange}
           />
+
+          {renderBranchNameRuleError(
+            this.state.currentError,
+            this.ERRORS_ID,
+            this.state.branchName
+          )}
 
           {renderBranchNameExistsOnRemoteWarning(
             this.state.branchName,
@@ -255,18 +287,61 @@ export class CreateBranch extends React.Component<
     this.updateBranchName(name)
   }
 
-  private updateBranchName(branchName: string) {
+  private async updateBranchName(branchName: string) {
+    this.setState({ branchName })
+
     const alreadyExists =
       this.props.allBranches.findIndex(b => b.name === branchName) > -1
 
     const currentError = alreadyExists
-      ? new Error(`A branch named ${branchName} already exists`)
+      ? {
+          error: new Error(`A branch named ${branchName} already exists.`),
+          isWarning: false,
+        }
       : null
+
+    if (!currentError) {
+      if (this.branchRulesDebounceId !== null) {
+        window.clearTimeout(this.branchRulesDebounceId)
+      }
+
+      this.branchRulesDebounceId = window.setTimeout(
+        this.checkBranchRules,
+        500,
+        branchName
+      )
+    }
 
     this.setState({
       branchName,
       currentError,
     })
+  }
+
+  private checkBranchRules = async (branchName: string) => {
+    if (
+      this.state.branchName !== branchName ||
+      branchName === '' ||
+      this.state.currentError !== null
+    ) {
+      return
+    }
+
+    const result = await checkBranchNameRules(
+      branchName,
+      this.props.accounts,
+      this.props.repository,
+      this.props.cachedRepoRulesets
+    )
+
+    // Make sure user branch name hasn't changed during async calls
+    if (this.state.branchName !== branchName) {
+      return
+    }
+
+    if (result !== null) {
+      this.setState({ currentError: result })
+    }
   }
 
   private createBranch = async () => {
@@ -284,7 +359,10 @@ export class CreateBranch extends React.Component<
       // to make sure the startPoint state is valid given the current props.
       if (!defaultBranch) {
         this.setState({
-          currentError: new Error('Could not determine the default branch'),
+          currentError: {
+            error: new Error('Could not determine the default branch.'),
+            isWarning: false,
+          },
         })
         return
       }
@@ -295,7 +373,10 @@ export class CreateBranch extends React.Component<
       // to make sure the startPoint state is valid given the current props.
       if (!upstreamDefaultBranch) {
         this.setState({
-          currentError: new Error('Could not determine the default branch'),
+          currentError: {
+            error: new Error('Could not determine the default branch.'),
+            isWarning: false,
+          },
         })
         return
       }
@@ -314,7 +395,7 @@ export class CreateBranch extends React.Component<
       }
 
       const timer = startTimer('create branch', repository)
-      await this.props.dispatcher.createBranch(
+      const branch = await this.props.dispatcher.createBranch(
         repository,
         name,
         startPoint,
@@ -322,6 +403,16 @@ export class CreateBranch extends React.Component<
       )
       timer.done()
       this.props.onDismissed()
+
+      // If the operation was successful and the branch was created from a
+      // commit, invoke the callback.
+      if (
+        branch !== undefined &&
+        this.props.targetCommit !== undefined &&
+        this.props.onBranchCreatedFromCommit !== undefined
+      ) {
+        this.props.onBranchCreatedFromCommit()
+      }
     }
   }
 
@@ -337,12 +428,16 @@ export class CreateBranch extends React.Component<
   ) {
     if (defaultBranch === null || defaultBranch.name === currentBranchName) {
       return (
-        <p>
+        <div>
           Your new branch will be based on your currently checked out branch (
-          <Ref>{currentBranchName}</Ref>
-          ). <Ref>{currentBranchName}</Ref> is the {defaultBranchLink} for your
-          repository.
-        </p>
+          <Ref>{currentBranchName}</Ref>){this.renderForkLinkSuffix()}.{' '}
+          {defaultBranch?.name === currentBranchName && (
+            <>
+              <Ref>{currentBranchName}</Ref> is the {defaultBranchLink} for your
+              repository.
+            </>
+          )}
+        </div>
       )
     } else {
       const items = [
@@ -365,7 +460,12 @@ export class CreateBranch extends React.Component<
           ? this.state.startPoint
           : StartPoint.CurrentBranch
 
-      return this.renderOptions(items, selectedValue)
+      return (
+        <div>
+          {this.renderOptions(items, selectedValue)}
+          {this.renderForkLink()}
+        </div>
+      )
     }
   }
 
@@ -384,12 +484,13 @@ export class CreateBranch extends React.Component<
     // fork will have the same default branch name
     if (currentBranchName === upstreamDefaultBranch.nameWithoutRemote) {
       return (
-        <p>
+        <div>
           Your new branch will be based on{' '}
           <strong>{upstreamRepositoryFullName}</strong>
           's {defaultBranchLink} (
-          <Ref>{upstreamDefaultBranch.nameWithoutRemote}</Ref>).
-        </p>
+          <Ref>{upstreamDefaultBranch.nameWithoutRemote}</Ref>)
+          {this.renderForkLinkSuffix()}.
+        </div>
       )
     } else {
       const items = [
@@ -411,8 +512,43 @@ export class CreateBranch extends React.Component<
         this.state.startPoint === StartPoint.UpstreamDefaultBranch
           ? this.state.startPoint
           : StartPoint.CurrentBranch
+      return (
+        <div>
+          {this.renderOptions(items, selectedValue)}
+          {this.renderForkLink()}
+        </div>
+      )
+    }
+  }
 
-      return this.renderOptions(items, selectedValue)
+  private renderForkLink = () => {
+    if (isRepositoryWithForkedGitHubRepository(this.props.repository)) {
+      return (
+        <div className="secondary-text">
+          Your default branch source is determined by your{' '}
+          <LinkButton onClick={this.onForkSettingsClick}>
+            fork behavior settings
+          </LinkButton>
+          .
+        </div>
+      )
+    } else {
+      return
+    }
+  }
+
+  private renderForkLinkSuffix = () => {
+    if (isRepositoryWithForkedGitHubRepository(this.props.repository)) {
+      return (
+        <span>
+          &nbsp;as determined by your{' '}
+          <LinkButton onClick={this.onForkSettingsClick}>
+            fork behavior settings
+          </LinkButton>
+        </span>
+      )
+    } else {
+      return
     }
   }
 
@@ -430,6 +566,14 @@ export class CreateBranch extends React.Component<
       />
     </Row>
   )
+
+  private onForkSettingsClick = () => {
+    this.props.dispatcher.showPopup({
+      type: PopupType.RepositorySettings,
+      repository: this.props.repository,
+      initialSelectedTab: RepositorySettingsTab.ForkSettings,
+    })
+  }
 }
 
 /** Reusable snippet */

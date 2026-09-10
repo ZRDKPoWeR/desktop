@@ -1,3 +1,4 @@
+import { RowIndexPath } from '../ui/lib/list/list-row-index-path'
 import { Commit } from './commit'
 import { GitHubRepository } from './github-repository'
 
@@ -29,6 +30,14 @@ export type DragElement = {
 export enum DropTargetType {
   Branch,
   Commit,
+  ListInsertionPoint,
+}
+
+export enum DropTargetSelector {
+  Branch = '.branches-list-item',
+  PullRequest = '.pull-request-item',
+  Commit = '.commit',
+  ListInsertionPoint = '.list-insertion-point',
 }
 
 export type BranchTarget = {
@@ -40,8 +49,14 @@ export type CommitTarget = {
   type: DropTargetType.Commit
 }
 
+export type ListInsertionPointTarget = {
+  type: DropTargetType.ListInsertionPoint
+  data: DragData
+  index: RowIndexPath
+}
+
 /**
  * This is a type is used in conjunction with the drag and drop manager to
  * pass information about a drop target.
  */
-export type DropTarget = BranchTarget | CommitTarget
+export type DropTarget = BranchTarget | CommitTarget | ListInsertionPointTarget

@@ -1,9 +1,25 @@
 import { IDataStore, ISecureStore } from './stores'
 import { getKeyForAccount } from '../auth'
-import { Account } from '../../models/account'
-import { fetchUser, EmailVisibility } from '../api'
+import { Account, isDotComAccount } from '../../models/account'
+import { fetchUser, EmailVisibility, getEnterpriseAPIURL } from '../api'
 import { fatalError } from '../fatal-error'
 import { TypedBaseStore } from './base-store'
+import { isGHE } from '../endpoint-capabilities'
+import { compare, compareDescending } from '../compare'
+
+// Ensure that GitHub.com accounts appear first followed by Enterprise
+// accounts, sorted by the order in which they were added.
+const sortAccounts = (accounts: ReadonlyArray<Account>) =>
+  accounts
+    .map((account, ix) => [account, ix] as const)
+    .sort(
+      ([xAccount, xIx], [yAccount, yIx]) =>
+        compareDescending(
+          isDotComAccount(xAccount),
+          isDotComAccount(yAccount)
+        ) || compare(xIx, yIx)
+    )
+    .map(([account]) => account)
 
 /** The data-only interface for storage. */
 interface IEmail {
@@ -43,6 +59,7 @@ interface IAccount {
   readonly avatarURL: string
   readonly id: number
   readonly name: string
+  readonly plan?: string
 }
 
 /** The store for logged in accounts. */
@@ -102,7 +119,7 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     )
     accountsByEndpoint.set(account.endpoint, account)
 
-    this.accounts = [...accountsByEndpoint.values()]
+    this.accounts = sortAccounts([...accountsByEndpoint.values()])
 
     this.save()
     return account
@@ -162,6 +179,29 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     this.save()
   }
 
+  private getMigratedGHEAccounts(
+    accounts: ReadonlyArray<IAccount>
+  ): ReadonlyArray<IAccount> | null {
+    let migrated = false
+    const migratedAccounts = accounts.map(account => {
+      let endpoint = account.endpoint
+      const endpointURL = new URL(endpoint)
+      // Migrate endpoints of subdomains of `.ghe.com` that use the `/api/v3`
+      // path to the correct URL using the `api.` subdomain.
+      if (isGHE(endpoint) && !endpointURL.hostname.startsWith('api.')) {
+        endpoint = getEnterpriseAPIURL(endpoint)
+        migrated = true
+      }
+
+      return {
+        ...account,
+        endpoint,
+      }
+    })
+
+    return migrated ? migratedAccounts : null
+  }
+
   /**
    * Load the users into memory from storage.
    */
@@ -171,7 +211,10 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
       return
     }
 
-    const rawAccounts: ReadonlyArray<IAccount> = JSON.parse(raw)
+    const parsedAccounts: ReadonlyArray<IAccount> = JSON.parse(raw)
+    const migratedAccounts = this.getMigratedGHEAccounts(parsedAccounts)
+    const rawAccounts = migratedAccounts ?? parsedAccounts
+
     const accountsWithTokens = []
     for (const account of rawAccounts) {
       const accountWithoutToken = new Account(
@@ -181,7 +224,8 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
         account.emails,
         account.avatarURL,
         account.id,
-        account.name
+        account.name,
+        account.plan
       )
 
       const key = getKeyForAccount(accountWithoutToken)
@@ -195,8 +239,13 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
       }
     }
 
-    this.accounts = accountsWithTokens
-    this.emitUpdate(this.accounts)
+    this.accounts = sortAccounts(accountsWithTokens)
+    // If any account was migrated, make sure to persist the new value
+    if (migratedAccounts !== null) {
+      this.save() // Save already emits an update
+    } else {
+      this.emitUpdate(this.accounts)
+    }
   }
 
   private save() {

@@ -10,6 +10,8 @@ import { TipState } from '../models/tip'
 import { updateMenuState as ipcUpdateMenuState } from '../ui/main-process-proxy'
 import { AppMenu, MenuItem } from '../models/app-menu'
 import { hasConflictedFiles } from './status'
+import { findContributionTargetDefaultBranch } from './branch'
+import { enableWorktreeSupport } from './feature-flag'
 
 export interface IMenuItemState {
   readonly enabled?: boolean
@@ -107,15 +109,17 @@ const allMenuIds: ReadonlyArray<MenuIDs> = [
   'discard-all-changes',
   'stash-all-changes',
   'preferences',
-  'update-branch',
+  'update-branch-with-contribution-target-branch',
   'compare-to-branch',
   'merge-branch',
   'rebase-branch',
   'view-repository-on-github',
   'compare-on-github',
+  'branch-on-github',
   'open-in-shell',
   'push',
   'pull',
+  'fetch',
   'branch',
   'repository',
   'go-to-commit-message',
@@ -127,12 +131,18 @@ const allMenuIds: ReadonlyArray<MenuIDs> = [
   'open-working-directory',
   'show-repository-settings',
   'open-external-editor',
+  'open-with-external-editor',
   'remove-repository',
   'new-repository',
   'add-local-repository',
   'clone-repository',
   'about',
   'create-pull-request',
+  'preview-pull-request',
+  'squash-and-merge-branch',
+  'toggle-stashed-changes',
+  'create-worktree',
+  'show-worktrees-list',
 ]
 
 function getAllMenusDisabledBuilder(): MenuStateBuilder {
@@ -157,13 +167,15 @@ function getRepositoryMenuBuilder(state: IAppState): MenuStateBuilder {
   let onDetachedHead = false
   let hasChangedFiles = false
   let hasConflicts = false
-  let hasDefaultBranch = false
   let hasPublishedBranch = false
   let networkActionInProgress = false
+  let hasRemote = false
   let tipStateIsUnknown = false
   let branchIsUnborn = false
   let rebaseInProgress = false
   let branchHasStashEntry = false
+  let onContributionTargetDefaultBranch = false
+  let hasContributionTargetDefaultBranch = false
 
   // check that its a github repo and if so, that is has issues enabled
   const repoIssuesEnabled =
@@ -178,12 +190,18 @@ function getRepositoryMenuBuilder(state: IAppState): MenuStateBuilder {
     const tip = branchesState.tip
     const defaultBranch = branchesState.defaultBranch
 
-    hasDefaultBranch = Boolean(defaultBranch)
-
     onBranch = tip.kind === TipState.Valid
     onDetachedHead = tip.kind === TipState.Detached
     tipStateIsUnknown = tip.kind === TipState.Unknown
     branchIsUnborn = tip.kind === TipState.Unborn
+    const contributionTarget = findContributionTargetDefaultBranch(
+      selectedState.repository,
+      branchesState
+    )
+    hasContributionTargetDefaultBranch = contributionTarget !== null
+    onContributionTargetDefaultBranch =
+      tip.kind === TipState.Valid &&
+      contributionTarget?.name === tip.branch.name
 
     // If we are:
     //  1. on the default branch, or
@@ -204,6 +222,7 @@ function getRepositoryMenuBuilder(state: IAppState): MenuStateBuilder {
     }
 
     networkActionInProgress = selectedState.state.isPushPullFetchInProgress
+    hasRemote = selectedState.state.remote !== null
 
     const { conflictState, workingDirectory } = selectedState.state.changesState
 
@@ -228,8 +247,12 @@ function getRepositoryMenuBuilder(state: IAppState): MenuStateBuilder {
     'show-changes',
     'show-history',
     'show-branches-list',
+    'show-worktrees-list',
     'open-external-editor',
+    'open-with-external-editor',
     'compare-to-branch',
+    'toggle-changes-filter',
+    'create-worktree',
   ]
 
   const menuStateBuilder = new MenuStateBuilder()
@@ -243,6 +266,11 @@ function getRepositoryMenuBuilder(state: IAppState): MenuStateBuilder {
       menuStateBuilder.enable(id)
     }
 
+    if (!enableWorktreeSupport()) {
+      menuStateBuilder.disable('show-worktrees-list')
+      menuStateBuilder.disable('create-worktree')
+    }
+
     menuStateBuilder.setEnabled(
       'rename-branch',
       (onNonDefaultBranch || !hasPublishedBranch) &&
@@ -254,13 +282,21 @@ function getRepositoryMenuBuilder(state: IAppState): MenuStateBuilder {
       onNonDefaultBranch && !branchIsUnborn && !onDetachedHead
     )
     menuStateBuilder.setEnabled(
-      'update-branch',
-      onNonDefaultBranch && hasDefaultBranch && !onDetachedHead
+      'update-branch-with-contribution-target-branch',
+      onBranch &&
+        hasContributionTargetDefaultBranch &&
+        !onContributionTargetDefaultBranch
     )
     menuStateBuilder.setEnabled('merge-branch', onBranch)
+    menuStateBuilder.setEnabled('squash-and-merge-branch', onBranch)
     menuStateBuilder.setEnabled('rebase-branch', onBranch)
     menuStateBuilder.setEnabled(
       'compare-on-github',
+      isHostedOnGitHub && hasPublishedBranch
+    )
+
+    menuStateBuilder.setEnabled(
+      'branch-on-github',
       isHostedOnGitHub && hasPublishedBranch
     )
 
@@ -274,6 +310,11 @@ function getRepositoryMenuBuilder(state: IAppState): MenuStateBuilder {
       isHostedOnGitHub && !branchIsUnborn && !onDetachedHead
     )
     menuStateBuilder.setEnabled(
+      'preview-pull-request',
+      !branchIsUnborn && !onDetachedHead && isHostedOnGitHub
+    )
+
+    menuStateBuilder.setEnabled(
       'push',
       !branchIsUnborn && !onDetachedHead && !networkActionInProgress
     )
@@ -281,6 +322,7 @@ function getRepositoryMenuBuilder(state: IAppState): MenuStateBuilder {
       'pull',
       hasPublishedBranch && !networkActionInProgress
     )
+    menuStateBuilder.setEnabled('fetch', hasRemote && !networkActionInProgress)
     menuStateBuilder.setEnabled(
       'create-branch',
       !tipStateIsUnknown && !branchIsUnborn && !rebaseInProgress
@@ -304,6 +346,7 @@ function getRepositoryMenuBuilder(state: IAppState): MenuStateBuilder {
       selectedState.type === SelectionType.MissingRepository
     ) {
       menuStateBuilder.disable('open-external-editor')
+      menuStateBuilder.disable('open-with-external-editor')
     }
   } else {
     for (const id of repositoryScopedIDs) {
@@ -312,7 +355,7 @@ function getRepositoryMenuBuilder(state: IAppState): MenuStateBuilder {
 
     menuStateBuilder.disable('view-repository-on-github')
     menuStateBuilder.disable('create-pull-request')
-
+    menuStateBuilder.disable('preview-pull-request')
     if (
       selectedState &&
       selectedState.type === SelectionType.MissingRepository
@@ -328,14 +371,17 @@ function getRepositoryMenuBuilder(state: IAppState): MenuStateBuilder {
     menuStateBuilder.disable('delete-branch')
     menuStateBuilder.disable('discard-all-changes')
     menuStateBuilder.disable('stash-all-changes')
-    menuStateBuilder.disable('update-branch')
+    menuStateBuilder.disable('update-branch-with-contribution-target-branch')
     menuStateBuilder.disable('merge-branch')
+    menuStateBuilder.disable('squash-and-merge-branch')
     menuStateBuilder.disable('rebase-branch')
 
     menuStateBuilder.disable('push')
     menuStateBuilder.disable('pull')
+    menuStateBuilder.disable('fetch')
     menuStateBuilder.disable('compare-to-branch')
     menuStateBuilder.disable('compare-on-github')
+    menuStateBuilder.disable('branch-on-github')
     menuStateBuilder.disable('toggle-stashed-changes')
   }
 
@@ -349,6 +395,7 @@ function getMenuState(state: IAppState): Map<MenuIDs, IMenuItemState> {
 
   return getAllMenusEnabledBuilder()
     .merge(getRepositoryMenuBuilder(state))
+    .merge(getAppMenuBuilder(state))
     .merge(getInWelcomeFlowBuilder(state.showWelcomeFlow))
     .merge(getNoRepositoriesBuilder(state)).state
 }
@@ -395,6 +442,16 @@ function getNoRepositoriesBuilder(state: IAppState): MenuStateBuilder {
       menuStateBuilder.disable(id)
     }
   }
+
+  return menuStateBuilder
+}
+
+function getAppMenuBuilder(state: IAppState): MenuStateBuilder {
+  const menuStateBuilder = new MenuStateBuilder()
+  const enabled = state.resizablePaneActive
+
+  menuStateBuilder.setEnabled('increase-active-resizable-width', enabled)
+  menuStateBuilder.setEnabled('decrease-active-resizable-width', enabled)
 
   return menuStateBuilder
 }

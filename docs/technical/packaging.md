@@ -20,7 +20,6 @@ The webpack configuration files organize the source files into these targets:
  - `renderer.js` - logic in the renderer process in Electron
  - `crash.js` - specialised UI for displaying an error that crashed the app
  - `highlighter.js` - logic for syntax highlighting, which runs in a web worker
- - `ask-pass.js` - logic for handling authentication requests from Git
  - `cli.js` - logic for the `github` command line interface
 
 Webpack also handles these steps:
@@ -108,16 +107,8 @@ Other things to note about the Windows packaging process:
 
 ### Linux
 
-Desktop uses `electron-builder` to generate these three packages:
-
- - `.deb` package for Debian-based distributions
- - `.rpm` package for RPM-based various distributions
- - `.AppImage` package for various distributions (no elevated permissions
-   required)
- - `.snap` package for various distributions
-
-The `script/electron-builder-linux.yml` configuration file contains the details
-applied to each package (if applicable).
+Refer to the [`shiftkey/desktop`](https://github.com/shiftkey/desktop) fork
+for packaging details about Linux.
 
 ## `script/publish.ts`
 
